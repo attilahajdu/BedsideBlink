@@ -1,0 +1,57 @@
+{
+  "system_config": {
+    "version": "1.0-mvp",
+    "interaction_rules": {
+      "scan_speed_ms": 5000,
+      "selection_blink_ms": 800,
+      "emergency_blink_ms": 4000,
+      "visual_feedback": "progress_fill_on_active_item",
+      "auditory_scanning": true,
+      "audio_mode": "prerecorded"
+    },
+    "emergency_action": {
+      "label": "Emergency alarm",
+      "action": "trigger_loud_audio_on_device",
+      "trigger": "blink_exceeds_emergency_threshold",
+      "dismiss": "caregiver_tap"
+    },
+    "confirmation_mode": "standard",
+    "multi_item_mode": false
+  },
+  "navigation_root": {
+    "scan_order": ["urgent_needs", "comfort_care", "spelling", "quick_yes_no"]
+  },
+  "boards": {
+    "board_1_spelling": {
+      "label": "Spell a word",
+      "rows": [
+        { "id": "controls", "color": "red", "label": "Controls", "items": ["SPACE","WRONG / DELETE","CONFIRM WORD","FINISH MESSAGE"] },
+        { "id": "quick_letters", "color": "blue", "label": "Common", "items": ["E","T","A","O","I","N","S","R","H","L"] },
+        { "id": "numbers", "color": "pink", "label": "Numbers", "items": ["1","2","3","4","5","6","7","8","9","0"] },
+        { "id": "row_ad", "color": "white", "label": "A–D", "items": ["A","B","C","D"] },
+        { "id": "row_eh", "color": "yellow", "label": "E–H", "items": ["E","F","G","H"] },
+        { "id": "row_in", "color": "blue", "label": "I–N", "items": ["I","J","K","L","M","N"] },
+        { "id": "row_ot", "color": "green", "label": "O–T", "items": ["O","P","Q","R","S","T"] },
+        { "id": "row_uz", "color": "orange", "label": "U–Z", "items": ["U","V","W","X","Y","Z"] }
+      ]
+    },
+    "board_2_urgent": {
+      "label": "Urgent needs",
+      "groups": [
+        { "id": "white_group", "color": "white", "label": "Breathing and airway", "items": ["Breathing is difficult","I am coughing","Need cough assist","Cuff pressure issue","Water in tube","Valve issue","Inner cannula","Subglottic","Tube pulling"] },
+        { "id": "pink_group", "color": "pink", "label": "Pain and sickness", "items": ["Pain, chest or sore","Hot, cold or fever","I feel sick","Something pulling","Something trapped","Something bent","Medication","I don't feel well"] },
+        { "id": "blue_group", "color": "blue", "label": "Body areas", "items": [{"label":"Arms and elbows","subItems":["Left arm","Right arm","Left elbow","Right elbow"]},{"label":"Feet and heels","subItems":["Left foot","Right foot","Left heel","Right heel","Both feet"]},"Rub under thighs","Bum","Calves","Bend knees","Trunk","Hips"] }
+      ]
+    },
+    "board_3_comfort": {
+      "label": "Comfort and care",
+      "groups": [
+        { "id": "head_face_mouth", "color": "yellow", "label": "Head, face and mouth", "items": ["Eye drops",{"label":"Nose","subItems":["Left nostril","Right nostril","Bridge","Tip"]},{"label":"Head","subItems":["Eyes","Left eye","Right eye","Forehead","Temple","Top of head","Back of head","Jaw"]},{"label":"Hair pulling","subItems":["Front","Left side","Right side","Back"]},{"label":"Ears","subItems":["Left ear","Right ear","Both ears"]},"Mouth biting","Shoulder blades","Face and teeth","Lips"] },
+        { "id": "blue_group", "color": "blue", "label": "Positioning", "items": ["Wonky","Uncomfortable","Sit up or lay back","Move the bed","Slipped","Pillow","Cushion ring","Knee brace","Feet up"] },
+        { "id": "green_group", "color": "green", "label": "Toilet and food", "items": ["Toilet","Catheter","Bypassed","Bladder washout","Thirsty or food"] },
+        { "id": "pink_group", "color": "pink", "label": "People, media and environment", "items": ["Mum, Dad or Maisy","Out the door","Computer","Radio or TV","Volume or channel","I want to go out"] },
+        { "id": "yellow_group", "color": "orange", "label": "Clothing and irritation", "items": ["Wedgie","Seam","Crease","Sling","Lump of food","Bra","Itch","Rub","Glasses","Tape","Gauze"] }
+      ]
+    }
+  }
+}

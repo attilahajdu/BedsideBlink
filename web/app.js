@@ -1,0 +1,2058 @@
+// BedsideBlink MVP - Full implementation per specification
+// Face detection + long-blink selection (unchanged). All screens and flow built here.
+
+const LEFT_EYE = [33, 160, 158, 133, 153, 144];
+const RIGHT_EYE = [362, 385, 387, 263, 373, 380];
+
+function eyeAspectRatio(landmarks, indices) {
+  const p = i => landmarks[indices[i]];
+  const d = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  return (d(p(1), p(5)) + d(p(2), p(4))) / (2 * d(p(0), p(3)) + 1e-6);
+}
+
+const BLINK_BUFFER_MS = 150;
+
+function getSelectionBlinkThresholdMs() {
+  return config.selection_blink_ms + BLINK_BUFFER_MS;
+}
+
+const COLORS = {
+  white: "#94a3b8",
+  yellow: "#eab308",
+  blue: "#38bdf8",
+  green: "#4ade80",
+  orange: "#fb923c",
+  pink: "#f472b6",
+  red: "#f87171"
+};
+
+// Lucide icon names (MIT license, https://lucide.dev)
+const LUCIDE_ICONS = {
+  urgent: "triangle-alert",
+  comfort: "heart",
+  spelling: "type",
+  quick: "circle-check",
+  thumbsUp: "thumbs-up",
+  thumbsDown: "thumbs-down",
+  breathing: "wind",
+  head: "user",
+  pain: "thermometer",
+  body: "circle-user",
+  position: "layout-grid",
+  toilet: "bath",
+  people: "users",
+  clothing: "shirt",
+  yes: "check",
+  no: "x",
+  back: "arrow-left",
+  sayMore: "message-circle",
+  done: "circle-check-big",
+  prev: "chevron-left",
+  next: "chevron-right",
+  numbers: "hash",
+  letters: "type",
+  controls: "settings"
+};
+
+function hexToRgba(hex, alpha) {
+  const m = hex.replace(/^#/, "").match(/^([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+  if (!m) return `rgba(148, 163, 184, ${alpha})`;
+  return `rgba(${parseInt(m[1], 16)}, ${parseInt(m[2], 16)}, ${parseInt(m[3], 16)}, ${alpha})`;
+}
+function hexToTintStyle(hex) {
+  return ` style="--tint-color: ${hexToRgba(hex, 0.22)}"`;
+}
+function getIconName(item, label, context) {
+  const l = (label || "").toLowerCase();
+  const id = typeof item === "object" && item.id;
+  if (id === "urgent") return LUCIDE_ICONS.urgent;
+  if (id === "comfort") return LUCIDE_ICONS.comfort;
+  if (id === "spelling") return LUCIDE_ICONS.spelling;
+  if (id === "quick") return LUCIDE_ICONS.quick;
+  if (label === "Go back" || l === "go back") return LUCIDE_ICONS.back;
+  if (label === "PREV PAGE" || l === "prev page") return LUCIDE_ICONS.prev;
+  if (label === "NEXT PAGE" || l === "next page") return LUCIDE_ICONS.next;
+  if (label === "Yes, that's right" || label === "YES" || label?.startsWith("Yes")) return LUCIDE_ICONS.yes;
+  if (label === "No, go back" || label === "NO" || label?.startsWith("No,")) return LUCIDE_ICONS.no;
+  if (label === "I need something else") return LUCIDE_ICONS.sayMore;
+  if (label === "I'm finished") return LUCIDE_ICONS.done;
+  if (label === "SAY MORE") return LUCIDE_ICONS.sayMore;
+  if (label === "I'M DONE") return LUCIDE_ICONS.done;
+  const gId = typeof item === "object" && item.id;
+  if (gId === "white_group" || l.includes("breathing") || l.includes("airway")) return LUCIDE_ICONS.breathing;
+  if (gId === "head_face_mouth" || (gId === "yellow_group" && context === "urgent")) return LUCIDE_ICONS.head;
+  if (gId === "pink_group" && context === "urgent") return LUCIDE_ICONS.pain;
+  if (gId === "blue_group" && context === "urgent") return LUCIDE_ICONS.body;
+  if (gId === "blue_group" && context === "comfort") return LUCIDE_ICONS.position;
+  if (gId === "green_group") return LUCIDE_ICONS.toilet;
+  if (gId === "pink_group" && context === "comfort") return LUCIDE_ICONS.people;
+  if (gId === "yellow_group" && context === "comfort") return LUCIDE_ICONS.clothing;
+  if (id === "numbers") return LUCIDE_ICONS.numbers;
+  if (id === "controls") return LUCIDE_ICONS.controls;
+  if (id && id.startsWith("row_")) return LUCIDE_ICONS.letters;
+  return null;
+}
+
+const COMM_HISTORY_KEY = "bedsideblink_comm_history";
+const COMM_HISTORY_MAX = 300;
+
+function loadCommunicationHistory() {
+  try {
+    const s = localStorage.getItem(COMM_HISTORY_KEY);
+    const hist = s ? JSON.parse(s) : [];
+    return hist.map((e, i) => ({
+      id: e.id || "legacy_" + i + "_" + Date.now(),
+      time: e.time || "—",
+      date: e.date || "—",
+      label: e.label || "",
+      done: !!e.done,
+      doneDate: e.doneDate || null
+    }));
+  } catch (_) { return []; }
+}
+
+function saveCommunicationHistory(hist) {
+  try {
+    localStorage.setItem(COMM_HISTORY_KEY, JSON.stringify(hist.slice(-COMM_HISTORY_MAX)));
+  } catch (_) {}
+}
+
+function logEvent(label) {
+  const now = new Date();
+  const time = now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const date = now.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+  const entry = { id: Date.now().toString(36) + Math.random().toString(36).slice(2), time, date, label, done: false };
+  state.session.push({ time, label });
+  const hist = loadCommunicationHistory();
+  hist.push(entry);
+  saveCommunicationHistory(hist);
+}
+
+let config = {
+  scan_speed_ms: 5000,
+  selection_blink_ms: 800,
+  emergency_blink_ms: 4000,
+  auditory_scanning: true,
+  volume: 0.8,
+  max_items_per_page: 8,
+  voiceUri: null
+};
+
+let content = null;
+let supabaseClient = null;
+
+let state = {
+  screen: "face_ready",
+  faceLandmarker: null,
+  video: null,
+  stream: null,
+  lastFrameTime: 0,
+  faceDetected: false,
+  blinkStart: 0,
+  cooldownUntil: 0,
+  scanIndex: 0,
+  scanItems: [],
+  scanInterval: null,
+  scanTickDuration: 5000,
+  session: [],
+  paused: false,
+  faceLostAt: null,
+  contentBoard: null,
+  itemPage: 0,
+  spellingWord: "",
+  spellingRowIndex: 0,
+  spellingCharIndex: 0,
+  spellingPhase: "row", // row | char
+  navStack: [],
+  config: null,
+  lastSelection: "",
+  quickYesNoReturnScreen: null,
+  calibrationMode: null,
+  calibrationData: { normalBlinks: [], deliberateBlinks: [] },
+  calibrationCompleted: false,
+  faceReadyBlinkCount: 0,
+  scanTickStart: 0,
+  summaryBlinkCount: 0,
+  summaryLastBlinkTime: 0,
+  SUMMARY_BLINK_WINDOW_MS: 4000,
+  caregiverMode: false
+};
+
+const CAREGIVER_MODE_KEY = "bedsideblink_caregiver_mode";
+
+function setCaregiverMode(on) {
+  state.caregiverMode = !!on;
+  try { localStorage.setItem(CAREGIVER_MODE_KEY, state.caregiverMode ? "1" : "0"); } catch (_) {}
+  document.body.classList.toggle("patient-mode", !state.caregiverMode);
+  const btn = document.getElementById("caregiver-toggle");
+  if (btn) btn.textContent = state.caregiverMode ? "Patient view" : "Caregiver";
+  updateStatusHint();
+}
+
+function toggleCaregiverMode() {
+  setCaregiverMode(!state.caregiverMode);
+}
+
+function updateStatusHint() {
+  const el = document.getElementById("status-hint");
+  if (!el) return;
+  if (state.caregiverMode) {
+    el.textContent = "Long blink to choose";
+  } else {
+    el.textContent = "";
+  }
+}
+
+function getScanDurationMs(forSpelling = false) {
+  return Math.min(8000, Math.max(2000, config.scan_speed_ms));
+}
+
+function initSupabase() {
+  const url = typeof window !== "undefined" && window.BEDSIDEBLINK_SUPABASE_URL;
+  const key = typeof window !== "undefined" && window.BEDSIDEBLINK_SUPABASE_ANON_KEY;
+  const supabaseLib = typeof window !== "undefined" && window.supabase;
+  if (url && key && supabaseLib) {
+    supabaseClient = supabaseLib.createClient(url, key);
+    return true;
+  }
+  if (!url || !key) {
+    console.warn("Supabase: Missing config. Ensure supabase-config.js loads (hard refresh to avoid cache).");
+  }
+  if (!supabaseLib) {
+    console.warn("Supabase: Library not loaded. Check network tab for supabase.min.js.");
+  }
+  return false;
+}
+
+async function loadConfigFromSupabase() {
+  if (!supabaseClient) return null;
+  try {
+    const { data, error } = await supabaseClient.from("bedsideblink_config").select("id, config").limit(1).maybeSingle();
+    if (error) throw error;
+    return data?.config ?? null;
+  } catch (e) {
+    console.warn("Supabase load failed:", e.message);
+    return null;
+  }
+}
+
+async function saveConfigToSupabase(cfg) {
+  if (!supabaseClient) {
+    console.warn("Supabase save failed: client not initialized. Add URL and anon key to supabase-config.js");
+    return false;
+  }
+  try {
+    const id = "11111111-1111-1111-1111-111111111111";
+    const { error } = await supabaseClient.from("bedsideblink_config").upsert(
+      { id, config: cfg, updated_at: new Date().toISOString() },
+      { onConflict: "id" }
+    );
+    if (error) throw error;
+    return true;
+  } catch (e) {
+    console.warn("Supabase save failed:", e.message);
+    window.__lastSupabaseError = e.message;
+    return false;
+  }
+}
+
+async function loadContent() {
+  try {
+    const r = await fetch("content.json");
+    if (!r.ok) throw new Error(`Content load failed (${r.status})`);
+    content = await r.json();
+    config.scan_speed_ms = content.system_config?.interaction_rules?.scan_speed_ms ?? 5000;
+    config.selection_blink_ms = content.system_config?.interaction_rules?.selection_blink_ms ?? 800;
+    config.emergency_blink_ms = content.system_config?.interaction_rules?.emergency_blink_ms ?? 4000;
+  } catch (e) {
+    console.warn("Using default config:", e.message);
+    content = { boards: {}, navigation_root: { scan_order: ["urgent_needs", "comfort_care", "spelling", "quick_yes_no"] } };
+  }
+  initSupabase();
+  const supabaseConfig = await loadConfigFromSupabase();
+  const baseBoards = content?.boards || {};
+  const baseNav = content?.navigation_root || { scan_order: ["urgent_needs", "comfort_care", "spelling", "quick_yes_no"] };
+  state.config = {
+    boards: { ...baseBoards, ...(supabaseConfig?.boards || {}) },
+    navigation_root: { ...baseNav, ...(supabaseConfig?.navigation_root || {}) }
+  };
+  const saved = localStorage.getItem("bedsideblink_calibration");
+  if (saved) {
+    try {
+      const data = JSON.parse(saved);
+      const ms = data?.selection_blink_ms;
+      if (typeof ms === "number" && ms >= 500 && ms <= 1500) {
+        config.selection_blink_ms = ms;
+        state.calibrationCompleted = !!data.calibrationCompleted;
+      }
+      const scanMs = data?.scan_speed_ms;
+      if (typeof scanMs === "number" && scanMs >= 2000 && scanMs <= 8000) {
+        config.scan_speed_ms = scanMs;
+      }
+    } catch (_) {}
+  }
+}
+
+function playBeep(freq = 800, duration = 200) {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(config.volume * 0.3, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + duration / 1000);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + duration / 1000);
+  } catch (e) { console.warn("Audio failed", e); }
+}
+
+function saveCalibrationState() {
+  const scanInput = document.getElementById("calibration-scan-speed");
+  if (scanInput) {
+    const val = parseInt(scanInput.value, 10);
+    if (!isNaN(val) && val >= 2000 && val <= 8000) config.scan_speed_ms = val;
+  }
+  localStorage.setItem("bedsideblink_calibration", JSON.stringify({
+    selection_blink_ms: config.selection_blink_ms,
+    scan_speed_ms: config.scan_speed_ms,
+    calibrationCompleted: state.calibrationCompleted
+  }));
+}
+
+function openCalibration() {
+  state.calibrationMode = "normal_blinks";
+  state.calibrationData = { normalBlinks: [], deliberateBlinks: [] };
+  const scanInput = document.getElementById("calibration-scan-speed");
+  if (scanInput) scanInput.value = config.scan_speed_ms;
+  document.getElementById("calibration-modal").classList.remove("hidden");
+  updateCalibrationStep();
+}
+
+function updateCalibrationStep() {
+  const p = document.getElementById("calibration-step");
+  if (!p) return;
+  const d = state.calibrationData;
+  if (state.calibrationMode === "normal_blinks") {
+    const n = d.normalBlinks.length;
+    p.textContent = n < 5 ? `Blink normally a few times. (${n}/5 recorded)` : "Normal blinks recorded. Moving to selection blink…";
+  } else if (state.calibrationMode === "deliberate_blinks") {
+    const n = d.deliberateBlinks.length;
+    p.textContent = n < 3 ? `Do your selection blink — a longer, deliberate blink. (${n}/3)` : "Recording complete. Calculating threshold…";
+  } else if (state.calibrationMode === "confirm") {
+    p.textContent = `Selection blink set to ${config.selection_blink_ms} ms. Do a deliberate blink to confirm, or tap Close to skip.`;
+  }
+}
+
+function handleCalibrationBlink(duration) {
+  const d = state.calibrationData;
+  if (state.calibrationMode === "normal_blinks") {
+    if (duration < 600) d.normalBlinks.push(duration);
+    if (d.normalBlinks.length >= 5) {
+      state.calibrationMode = "deliberate_blinks";
+      state.calibrationData.deliberateBlinks = [];
+    }
+  } else if (state.calibrationMode === "deliberate_blinks") {
+    if (duration >= 400) d.deliberateBlinks.push(duration);
+    if (d.deliberateBlinks.length >= 3) {
+      const avg = d.deliberateBlinks.reduce((a, b) => a + b, 0) / 3;
+      config.selection_blink_ms = Math.max(600, Math.round(avg * 0.95));
+      state.calibrationMode = "confirm";
+    }
+  } else if (state.calibrationMode === "confirm") {
+    if (duration >= config.selection_blink_ms * 0.8) {
+      saveCalibrationState();
+      state.calibrationMode = null;
+      state.calibrationCompleted = true;
+      document.getElementById("calibration-modal").classList.add("hidden");
+      playBeep(800, 200);
+    }
+  }
+  updateCalibrationStep();
+}
+
+function playAlarm() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.frequency.value = 880;
+    osc.type = "sine";
+    gain.gain.setValueAtTime(0.8, ctx.currentTime);
+    osc.start(ctx.currentTime);
+    osc.stop(ctx.currentTime + 2);
+  } catch (e) { console.warn("Alarm failed", e); }
+}
+
+// Soothing, natural-sounding female voices (Enhanced/Natural variants first; robotic ones last)
+const PREFERRED_FEMALE_VOICES = [
+  "Samantha (Enhanced)",
+  "Samantha",
+  "Karen",
+  "Victoria",
+  "Fiona",
+  "Ava (Enhanced)",
+  "Ava (Premium)",
+  "Microsoft Aria",
+  "Microsoft Emma",
+  "Microsoft Zira",
+  "Google UK English Female",
+  "Google US English Female",
+  "Google Australia English Female",
+  "Moira"
+];
+
+function pickDefaultVoice() {
+  const voices = speechSynthesis.getVoices();
+  if (!voices.length) return;
+  for (const name of PREFERRED_FEMALE_VOICES) {
+    const v = voices.find(x => (x.name || "").toLowerCase().includes(name.toLowerCase()));
+    if (v) {
+      config.voiceUri = v.voiceURI;
+      return;
+    }
+  }
+  const englishFemale = voices.find(v =>
+    (v.lang.startsWith("en") || v.lang.startsWith("en-")) &&
+    /female|woman|samantha|karen|victoria|zira|aria|fiona|ava|emma|moira/i.test(v.name || "")
+  );
+  if (englishFemale) config.voiceUri = englishFemale.voiceURI;
+  else if (voices.length) config.voiceUri = voices[0].voiceURI;
+}
+
+function speak(text) {
+  if (!config.auditory_scanning) return;
+  const u = new SpeechSynthesisUtterance(text);
+  u.volume = config.volume;
+  u.rate = 0.72;
+  u.pitch = 0.95;
+  if (config.voiceUri) {
+    const voice = speechSynthesis.getVoices().find(v => v.voiceURI === config.voiceUri);
+    if (voice) u.voice = voice;
+  }
+  speechSynthesis.cancel();
+  speechSynthesis.speak(u);
+}
+
+const SCREEN_LABELS = {
+  face_ready: "Face ready",
+  home: "Home",
+  section: "Section",
+  items: "Items",
+  confirm: "Confirm",
+  "anything-else": "Next",
+  spelling: "Spelling",
+  "quick-yes-no": "Quick YES/NO",
+  summary: "Summary"
+};
+
+function showScreen(id) {
+  if (state.screen === "face_ready" && id !== "face_ready") state.faceReadyBlinkCount = 0;
+  document.querySelectorAll(".screen").forEach(s => { s.classList.remove("active"); s.classList.remove("full-split"); });
+  const el = document.getElementById("screen-" + String(id).replace(/_/g, "-"));
+  if (el) { el.classList.add("active"); if (id === "quick-yes-no") el.classList.add("full-split"); }
+  state.screen = id;
+  document.body.classList.remove("screen-face-ready", "screen-home", "screen-section", "screen-items", "screen-confirm", "screen-anything-else", "screen-spelling", "screen-quick-yes-no", "screen-summary");
+  document.body.classList.add("screen-" + String(id).replace(/_/g, "-"));
+  document.getElementById("face-lost-overlay")?.classList.add("hidden");
+  updateStatus(SCREEN_LABELS[id] || id, state.lastSelection);
+  if (id === "face_ready") {
+    document.getElementById("btn-start").disabled = true;
+    state.faceReadyBlinkCount = 0;
+    updateFaceReadyBlinkHint();
+    renderDailySummaryLanding();
+  }
+}
+
+function updateStatus(step, last) {
+  const s = document.getElementById("status-step");
+  const l = document.getElementById("status-last");
+  if (s) s.textContent = step || "";
+  if (l) {
+    const hist = loadCommunicationHistory();
+    const mostRecent = hist.length > 0 ? hist[hist.length - 1] : null;
+    const label = mostRecent?.label || last || "";
+    const time = mostRecent?.time || "";
+    if (label) {
+      l.textContent = time ? `Last interaction: "${label}" at ${time}` : `Last interaction: "${label}"`;
+    } else {
+      l.textContent = "";
+    }
+  }
+  updateStatusFaceIcon();
+}
+
+function updateStatusFaceIcon() {
+  const el = document.getElementById("status-face-icon");
+  if (!el) return;
+  if (state.screen === "face_ready" && state.faceDetected) {
+    el.classList.remove("hidden");
+    el.innerHTML = '<i data-lucide="eye" class="status-eye-icon" aria-hidden="true"></i>';
+    if (typeof lucide !== "undefined") lucide.createIcons({ root: el });
+  } else {
+    el.classList.add("hidden");
+    el.innerHTML = "";
+  }
+}
+
+function updateFaceReadyBlinkHint() {
+  const hintEl = document.getElementById("face-ready-blink-hint");
+  const countEl = document.getElementById("face-ready-blink-count");
+  const btnStart = document.getElementById("btn-start");
+  if (!hintEl || state.screen !== "face_ready") return;
+  hintEl.classList.remove("hidden");
+  const labelEl = hintEl.querySelector(".blink-hint-label");
+  if (labelEl) {
+    if (btnStart?.disabled) {
+      labelEl.textContent = "Detecting face…";
+    } else if (state.faceReadyBlinkCount >= 2) {
+      labelEl.textContent = "Starting…";
+    } else {
+      labelEl.textContent = "Blink twice to begin";
+    }
+  }
+  if (countEl) countEl.textContent = (btnStart?.disabled || state.faceReadyBlinkCount >= 2) ? "" : ` (${state.faceReadyBlinkCount} of 2 blinks)`;
+}
+
+let faceNotDetectedSeconds = 0;
+let idleMessageShown = false;
+
+function updateFaceStatusText() {
+  const el = document.getElementById("face-status-text");
+  const idleEl = document.getElementById("face-idle-text");
+  if (!el || state.screen !== "face_ready") return;
+  if (state.faceDetected) {
+    faceNotDetectedSeconds = 0;
+    idleMessageShown = false;
+    el.textContent = "You are in position";
+    el.classList.remove("hidden");
+    if (idleEl) idleEl.classList.add("hidden");
+  } else {
+    if (faceNotDetectedSeconds >= 10 && idleEl) {
+      idleMessageShown = true;
+      el.classList.add("hidden");
+      idleEl.classList.remove("hidden");
+    } else {
+      el.textContent = "Please stay within the frame";
+      el.classList.remove("hidden");
+      if (idleEl) idleEl.classList.add("hidden");
+    }
+  }
+}
+
+function setHistoryDone(id, done) {
+  const hist = loadCommunicationHistory();
+  const i = hist.findIndex(e => e.id === id);
+  if (i >= 0) {
+    hist[i].done = !!done;
+    hist[i].doneDate = done ? new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }) : null;
+    saveCommunicationHistory(hist);
+  }
+}
+
+function renderCommunicationHistoryTable(containerId, options = {}) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  const hist = loadCommunicationHistory();
+  const maxRows = options.maxRows ?? hist.length;
+  const slice = [...hist].reverse().slice(0, maxRows);
+  if (slice.length === 0) {
+    el.innerHTML = '<div class="comm-history-inner"><p class="event-empty">No communications yet.</p></div>';
+    el.classList.remove("hidden");
+    return;
+  }
+  el.classList.remove("hidden");
+  const rows = slice.map(e => `
+    <tr data-id="${escapeHtml(e.id)}" class="${e.done ? "comm-done" : ""}">
+      <td class="event-time">${escapeHtml(e.date)} ${escapeHtml(e.time)}</td>
+      <td class="event-label">${escapeHtml(e.label)}</td>
+      <td class="event-done"><input type="checkbox" ${e.done ? "checked" : ""} aria-label="Taken care of" title="Taken care of"></td>
+    </tr>`).join("");
+  el.innerHTML = `
+    <div class="comm-history-inner">
+      <h3 class="comm-history-title">Communication history</h3>
+      <table class="event-log event-log-glass">
+        <thead><tr><th>Date & time</th><th>Action requested</th><th class="col-done">Done</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+  el.querySelectorAll(".event-done input").forEach(cb => {
+    cb.addEventListener("change", () => {
+      const row = cb.closest("tr");
+      const id = row?.dataset?.id;
+      if (id) {
+        setHistoryDone(id, cb.checked);
+        row?.classList.toggle("comm-done", cb.checked);
+        if (containerId === "summary-event-log") renderSummaryRequestCards();
+      }
+    });
+  });
+}
+
+const COMPACT_EVENT_MAX_ROWS = 5;
+const SUMMARY_EVENT_MAX_ROWS = 5;
+
+function renderDailySummary() {
+  const hist = loadCommunicationHistory();
+  const flat = [...hist].sort((a, b) => {
+    const da = parseDateKey(a.date || "—");
+    const db = parseDateKey(b.date || "—");
+    if (da - db !== 0) return db - da;
+    return (b.time || "").localeCompare(a.time || "");
+  });
+  const contentEl = document.getElementById("daily-summary-content");
+  if (flat.length === 0) {
+    contentEl.innerHTML = '<p class="event-empty">No communications yet.</p>';
+    return;
+  }
+  const html = `
+    <div class="daily-summary-table-wrap">
+      <table class="daily-summary-table">
+        <thead><tr><th>Date</th><th>Time</th><th>Request</th><th class="col-done">Done</th></tr></thead>
+        <tbody>
+          ${flat.map(e => `
+            <tr class="${e.done ? "daily-summary-row-done" : ""}" data-id="${escapeHtml(e.id)}">
+              <td class="daily-summary-date">${escapeHtml(e.date || "—")}</td>
+              <td class="daily-summary-time">${escapeHtml(e.time || "—")}</td>
+              <td class="daily-summary-label-cell">${escapeHtml(e.label || "")}</td>
+              <td class="daily-summary-done-cell">
+                <label><input type="checkbox" ${e.done ? "checked" : ""} aria-label="Mark as completed"></label>
+              </td>
+            </tr>`).join("")}
+        </tbody>
+      </table>
+    </div>`;
+  contentEl.innerHTML = html;
+  contentEl.querySelectorAll(".daily-summary-done-cell input").forEach(cb => {
+    cb.addEventListener("change", () => {
+      const tr = cb.closest("tr");
+      const id = tr?.dataset?.id;
+      if (id) {
+        setHistoryDone(id, cb.checked);
+        tr?.classList.toggle("daily-summary-row-done", cb.checked);
+      }
+    });
+  });
+}
+
+function parseDateKey(s) {
+  if (!s || s === "—") return new Date(0);
+  const m = s.match(/(\d{2})\s+(\w{3})\s+(\d{4})/);
+  if (!m) return new Date(s);
+  const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+  return new Date(parseInt(m[3], 10), months[m[2]] ?? 0, parseInt(m[1], 10));
+}
+
+function renderDailySummaryLanding() {
+  const el = document.getElementById("daily-summary-landing-content");
+  if (!el) return;
+  const hist = loadCommunicationHistory();
+  const today = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+  const todayEntries = hist.filter(e => e.date === today).slice(-8).reverse();
+  if (todayEntries.length === 0) {
+    el.innerHTML = '<p class="event-empty">No communications today yet.</p>';
+    return;
+  }
+  const html = todayEntries.map(e => {
+    if (e.done) {
+      return `<div class="daily-summary-landing-row daily-summary-done"><span class="time">${escapeHtml(e.time)}</span><span class="label">${escapeHtml(e.label)}</span><span class="done">✓</span></div>`;
+    }
+    return `<div class="daily-summary-landing-row" data-id="${escapeHtml(e.id)}"><label class="daily-summary-landing-check"><input type="checkbox" aria-label="Mark as done"> <span class="time">${escapeHtml(e.time)}</span><span class="label">${escapeHtml(e.label)}</span></label></div>`;
+  }).join("");
+  el.innerHTML = html;
+  el.querySelectorAll(".daily-summary-landing-row[data-id] input").forEach(cb => {
+    cb.addEventListener("change", () => {
+      const row = cb.closest(".daily-summary-landing-row");
+      const id = row?.dataset?.id;
+      if (id) {
+        setHistoryDone(id, cb.checked);
+        renderDailySummaryLanding();
+        renderDailySummaryHome();
+      }
+    });
+  });
+}
+
+function renderDailySummaryHome() {
+  const el = document.getElementById("daily-summary-home-content");
+  if (!el) return;
+  const hist = loadCommunicationHistory();
+  const today = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+  const todayEntries = hist.filter(e => e.date === today).slice(-8).reverse();
+  if (todayEntries.length === 0) {
+    el.innerHTML = '<p class="event-empty">No communications today yet.</p>';
+    return;
+  }
+  const html = todayEntries.map(e => {
+    if (e.done) {
+      return `<div class="daily-summary-landing-row daily-summary-done"><span class="time">${escapeHtml(e.time)}</span><span class="label">${escapeHtml(e.label)}</span><span class="done">✓</span></div>`;
+    }
+    return `<div class="daily-summary-landing-row" data-id="${escapeHtml(e.id)}"><label class="daily-summary-landing-check"><input type="checkbox" aria-label="Mark as done"> <span class="time">${escapeHtml(e.time)}</span><span class="label">${escapeHtml(e.label)}</span></label></div>`;
+  }).join("");
+  el.innerHTML = html;
+  el.querySelectorAll(".daily-summary-landing-row[data-id] input").forEach(cb => {
+    cb.addEventListener("change", () => {
+      const row = cb.closest(".daily-summary-landing-row");
+      const id = row?.dataset?.id;
+      if (id) {
+        setHistoryDone(id, cb.checked);
+        renderDailySummaryLanding();
+        renderDailySummaryHome();
+      }
+    });
+  });
+}
+
+function renderFaceReadyEventLog() {
+  const el = document.getElementById("face-ready-event-log");
+  if (!el) return;
+  renderCommunicationHistoryTable("face-ready-event-log", { maxRows: COMPACT_EVENT_MAX_ROWS });
+}
+
+function renderHomeEventLog() {
+  const el = document.getElementById("home-event-log");
+  if (!el) return;
+  renderCommunicationHistoryTable("home-event-log", { maxRows: COMPACT_EVENT_MAX_ROWS });
+}
+
+function renderScanItems(items, activeIndex, onSelect, colorMap = null, iconMap = null, context = null, showIcons = true) {
+  const html = items.map((item, i) => {
+    const label = typeof item === "string" ? item : item.label || item;
+    const color = (colorMap && colorMap[i]) || (typeof item === "object" && item.color ? COLORS[item.color] : null);
+    const cls = i === activeIndex ? "scan-item active" : "scan-item";
+    const iconName = showIcons ? ((iconMap && iconMap[i]) || getIconName(item, label, context)) : null;
+    const iconHtml = iconName ? `<i data-lucide="${iconName}" class="scan-item-icon" aria-hidden="true"></i>` : "";
+    const timingHtml = '<span class="scan-item-timing" aria-live="polite"></span>';
+    const selectHint = i === activeIndex ? '<span class="scan-item-select-hint">Long blink to choose</span>' : "";
+    const tintStyle = color ? hexToTintStyle(color) : "";
+    return `<div class="${cls}" data-index="${i}" data-selectable${tintStyle} data-label="${String(label).replace(/"/g,"&quot;")}">${timingHtml}${selectHint}${iconHtml}<span class="scan-item-label">${String(label).replace(/</g,"&lt;").replace(/>/g,"&gt;")}</span></div>`;
+  }).join("");
+  return html;
+}
+
+function startScan(items, onSelect, options = {}) {
+  if (state.scanInterval) clearInterval(state.scanInterval);
+  state.scanItems = items;
+  state.scanIndex = 0;
+  state.onScanSelect = onSelect;
+  state.scanOptions = options;
+  const container = options.container;
+  const colorMap = options.colorMap;
+  const iconMap = options.iconMap;
+  const context = options.context;
+  const showIcons = options.showIcons !== false;
+  const isSpelling = options.screenId === "spelling";
+  const scanDuration = getScanDurationMs(isSpelling);
+
+  function tick() {
+    if (state.paused || state.screen !== options.screenId) return;
+    if (state.blinkStart > 0) return;
+    state.scanTickStart = Date.now();
+    state.scanTickDuration = scanDuration;
+    const item = items[state.scanIndex];
+    const label = typeof item === "string" ? item : (item?.label ?? item);
+    if (config.auditory_scanning && label) speak(label);
+    if (container) {
+      container.innerHTML = renderScanItems(items, state.scanIndex, onSelect, colorMap, iconMap, context, showIcons);
+      container.querySelectorAll(".scan-item").forEach((el, i) => {
+        el.classList.toggle("active", i === state.scanIndex);
+        addBlinkProgress(el, 0);
+      });
+      if (typeof lucide !== "undefined") lucide.createIcons({ root: container });
+      runCountdownUpdate();
+    }
+    state.scanIndex = (state.scanIndex + 1) % items.length;
+  }
+
+  tick();
+  state.scanInterval = setInterval(tick, scanDuration);
+}
+
+function stopScan() {
+  if (state.scanInterval) { clearInterval(state.scanInterval); state.scanInterval = null; }
+}
+
+function runCountdownUpdate() {
+  if (!state.scanInterval || state.paused) return;
+  const duration = state.scanTickDuration || 5000;
+  const remainingMs = Math.max(0, duration - (Date.now() - state.scanTickStart));
+  const remainingSec = Math.ceil(remainingMs / 1000);
+  const timingText = remainingSec > 1 ? `about ${remainingSec}s` : remainingSec === 1 ? "about 1s" : "";
+  const badgeText = remainingSec > 0 ? `${remainingSec}s` : "";
+  const activeScreen = document.querySelector(".screen.active");
+  if (activeScreen) {
+    activeScreen.querySelectorAll(".scan-item.active .scan-item-timing").forEach(el => { el.textContent = timingText; });
+    activeScreen.querySelectorAll(".quick-half.active .scan-item-countdown").forEach(el => { el.textContent = badgeText; });
+  }
+}
+
+function addBlinkProgress(el, progress) {
+  if (!el) return;
+  el.style.setProperty("--blink-progress", Math.min(1, progress));
+  el.classList.toggle("blink-in-progress", progress > 0 && progress < 1);
+}
+
+function goHome() {
+  state.navStack = [];
+  state.summaryBlinkCount = 0;
+  showScreen("home");
+  renderDailySummaryHome();
+  const cfg = state.config || { boards: {}, navigation_root: { scan_order: [] } };
+  const boards = cfg.boards || {};
+  const order = cfg.navigation_root?.scan_order || ["urgent_needs", "comfort_care", "spelling", "quick_yes_no"];
+
+  const builtIn = {
+    urgent_needs: { label: "Urgent needs", id: "urgent", color: "red", boardKey: "board_2_urgent" },
+    comfort_care: { label: "Comfort and care", id: "comfort", color: "green", boardKey: "board_3_comfort" },
+    spelling: { label: "Spell a word", id: "spelling", color: "blue" },
+    quick_yes_no: { label: "Quick yes or no", id: "quick", color: "orange" }
+  };
+
+  const ordered = order.map(sid => {
+    if (builtIn[sid]) return builtIn[sid];
+    const b = boards[sid];
+    if (b && b.label) return { label: b.label, id: sid, color: b.color || "white", boardKey: sid };
+    return null;
+  }).filter(Boolean);
+
+  const container = document.getElementById("home-items");
+  const colorMap = ordered.map(x => COLORS[x.color] || COLORS.white);
+  startScan(ordered, (label, item) => {
+    stopScan();
+    const it = item || {};
+    if (it.boardKey) {
+      state.contentBoard = boards[it.boardKey] || boards[it.id];
+      if (state.contentBoard) showSectionSelect();
+    } else if (it.id === "urgent") {
+      state.contentBoard = boards.board_2_urgent || content?.boards?.board_2_urgent;
+      showSectionSelect();
+    } else if (it.id === "comfort") {
+      state.contentBoard = boards.board_3_comfort || content?.boards?.board_3_comfort;
+      showSectionSelect();
+    } else if (it.id === "spelling") showSpelling();
+    else if (it.id === "quick") showQuickYesNo(null);
+  }, { container, screenId: "home", colorMap });
+}
+
+function getSectionContext() {
+  const lbl = state.contentBoard?.label || "";
+  return lbl.toLowerCase().includes("urgent") ? "urgent" : lbl.toLowerCase().includes("comfort") ? "comfort" : null;
+}
+
+function showSectionSelect() {
+  state.navStack.push({ screen: state.screen, data: state.contentBoard });
+  showScreen("section");
+  document.getElementById("section-title").textContent = state.contentBoard?.label || "";
+  const groups = state.contentBoard?.groups || [];
+  const items = groups.map(g => ({ ...g, label: g.label, color: g.color }));
+  items.push({ label: "Go back", color: "red" });
+  const colors = items.map(i => COLORS[i.color] || null);
+  const container = document.getElementById("section-items");
+  startScan(items, (label, item) => {
+    stopScan();
+    const it = item || {};
+    if (it.label === "Go back") { state.navStack.pop(); goHome(); return; }
+    state.currentGroup = it;
+    showItemList(it.items);
+  }, { container, screenId: "section", colorMap: colors, context: getSectionContext() });
+}
+
+function getItemLabel(item) {
+  return typeof item === "string" ? item : (item?.label || String(item));
+}
+
+function hasSubItems(item) {
+  return typeof item === "object" && item && Array.isArray(item.subItems) && item.subItems.length > 0;
+}
+
+function showItemList(groupItems) {
+  state.navStack.push({ screen: "section", data: null });
+  const all = (groupItems || []).filter(x => x !== "Go back");
+  const pages = [];
+  for (let i = 0; i < all.length; i += config.max_items_per_page) {
+    pages.push(all.slice(i, i + config.max_items_per_page));
+  }
+  state.itemPages = pages;
+  state.itemPage = 0;
+  state.pendingParent = null;
+  renderItemPage();
+}
+
+function showSubItemList(parentLabel, subItems) {
+  state.itemListParentGroup = state.currentGroup;
+  state.navStack.push({ screen: "items", parentLabel });
+  state.itemPages = [subItems];
+  state.itemPage = 0;
+  state.pendingParent = parentLabel;
+  state.currentGroup = { ...state.currentGroup, label: parentLabel + " — Where?" };
+  renderItemPage();
+}
+
+function renderItemPage() {
+  showScreen("items");
+  document.getElementById("items-title").textContent = state.currentGroup?.label || "";
+  const page = state.itemPages[state.itemPage] || [];
+  const items = [];
+  if (state.itemPages.length > 1) {
+    if (state.itemPage > 0) items.push("PREV PAGE");
+    items.push(...page);
+    if (state.itemPage < state.itemPages.length - 1) items.push("NEXT PAGE");
+  } else {
+    items.push(...page);
+  }
+  items.push("Go back");
+  const groupColor = state.currentGroup?.color ? COLORS[state.currentGroup.color] : null;
+  const container = document.getElementById("items-list");
+  const pagination = document.getElementById("items-pagination");
+  pagination.innerHTML = state.itemPages.length > 1 ? `Page ${state.itemPage + 1} of ${state.itemPages.length}` : "";
+  const pageStartInItems = state.itemPages.length > 1 && state.itemPage > 0 ? 1 : 0;
+  const colorMap = items.map((it, i) => (it === "Go back" || it === "PREV PAGE" || it === "NEXT PAGE") ? COLORS.red : groupColor);
+  const groupIconName = getIconName(state.currentGroup, state.currentGroup?.label, getSectionContext());
+  const iconMap = items.map(it => (it === "Go back" || it === "PREV PAGE" || it === "NEXT PAGE") ? null : groupIconName);
+  startScan(items, (label, rawItem) => {
+    stopScan();
+    if (label === "Go back") {
+      state.navStack.pop();
+      if (state.itemPage > 0) { state.itemPage--; renderItemPage(); }
+      else if (state.pendingParent) {
+        state.pendingParent = null;
+        const parent = state.itemListParentGroup;
+        state.currentGroup = parent;
+        if (parent?.items) showItemList(parent.items);
+        else showSectionSelect();
+      } else {
+        showSectionSelect();
+      }
+      return;
+    }
+    if (label === "PREV PAGE") { state.itemPage--; renderItemPage(); return; }
+    if (label === "NEXT PAGE") { state.itemPage++; renderItemPage(); return; }
+    const fullList = state.itemPages.flat();
+    const idx = items.findIndex(it => getItemLabel(it) === label);
+    if (idx >= 0) {
+      const pageIdx = idx - pageStartInItems;
+      if (pageIdx >= 0 && pageIdx < page.length) {
+        const selected = fullList[state.itemPage * config.max_items_per_page + pageIdx];
+        if (hasSubItems(selected)) {
+          showSubItemList(getItemLabel(selected), selected.subItems);
+        } else {
+          const finalLabel = state.pendingParent ? state.pendingParent + " → " + getItemLabel(selected) : getItemLabel(selected);
+          state.pendingConfirm = finalLabel;
+          showConfirmation(finalLabel);
+        }
+      }
+    }
+  }, { container, screenId: "items", colorMap, iconMap });
+}
+
+function showConfirmation(item) {
+  showScreen("confirm");
+  document.getElementById("confirm-item").textContent = item;
+  const opts = [{ label: "Yes, that's right", color: "green" }, { label: "No, go back", color: "red" }];
+  const container = document.getElementById("confirm-options");
+  startScan(opts, (label) => {
+    stopScan();
+    if (label.startsWith("Yes")) {
+      logEvent(item);
+      state.lastSelection = item;
+      showAnythingElse();
+    } else {
+      state.navStack.pop();
+      renderItemPage();
+    }
+  }, { container, screenId: "confirm", colorMap: [COLORS.green, COLORS.red] });
+}
+
+function showAnythingElse() {
+  showScreen("anything-else");
+  const lastEl = document.getElementById("anything-else-last");
+  if (lastEl) lastEl.textContent = state.lastSelection ? `Last request: ${state.lastSelection}` : "";
+  const opts = [
+    { label: "I need something else", color: "green" },
+    { label: "I'm finished", color: "blue" }
+  ];
+  const container = document.getElementById("anything-else-options");
+  startScan(opts, (label) => {
+    stopScan();
+    if (label === "I need something else") goHome();
+    else showSummary();
+  }, { container, screenId: "anything-else", colorMap: [COLORS.green, COLORS.blue] });
+}
+
+function showSpelling() {
+  state.navStack.push({ screen: "home" });
+  state.spellingWord = "";
+  const board = (state.config?.boards || content?.boards || {}).board_1_spelling;
+  state.spellingBoard = board;
+  showScreen("spelling");
+  spellingScanRows();
+}
+
+function spellingScanRows() {
+  document.getElementById("word-strip").textContent = state.spellingWord || "(building word)";
+  document.getElementById("spelling-row-label").textContent = "Select row";
+  const rows = state.spellingBoard.rows;
+  const backRow = { id: "go_back", label: "Go back", color: "red", items: [] };
+  const rowsWithBack = [...rows, backRow];
+  const container = document.getElementById("spelling-row-items");
+  const colorMap = rowsWithBack.map(r => COLORS[r.color]);
+  startScan(rowsWithBack, (label, row) => {
+    stopScan();
+    const r = row || {};
+    if (r.id === "go_back") {
+      state.navStack.pop();
+      goHome();
+      return;
+    }
+    if (r.id === "controls") {
+      const controlItems = [...r.items, "GO BACK"];
+      startScan(controlItems, (label2) => {
+        stopScan();
+        if (label2 === "GO BACK") {
+          spellingScanRows();
+          return;
+        }
+        handleSpellingControl(label2);
+      }, { container, screenId: "spelling", colorMap: controlItems.map(() => COLORS[r.color]), showIcons: false });
+    } else {
+      document.getElementById("spelling-row-label").textContent = "Row: " + r.label;
+      const letterItems = [...r.items, "GO BACK"];
+      startScan(letterItems, (label2) => {
+        stopScan();
+        if (label2 === "GO BACK") {
+          spellingScanRows();
+          return;
+        }
+        state.spellingWord += label2;
+        spellingScanRows();
+      }, { container, screenId: "spelling", colorMap: letterItems.map(() => COLORS[r.color]), showIcons: false });
+    }
+  }, { container, screenId: "spelling", colorMap, showIcons: false });
+}
+
+function handleSpellingControl(cmd) {
+  if (cmd === "WRONG / DELETE") {
+    if (state.spellingWord.length === 0) {
+      spellingScanRows();
+      return;
+    }
+    state.pendingSpellingDelete = true;
+    showSpellingDeleteConfirm();
+    return;
+  }
+  if (cmd === "SPACE") {
+    state.spellingWord += " ";
+  } else if (cmd === "CONFIRM WORD") {
+    if (state.spellingWord.trim()) {
+      logEvent(state.spellingWord.trim());
+      state.lastSelection = state.spellingWord.trim();
+      state.spellingWord = "";
+      showAnythingElse();
+      return;
+    }
+  } else if (cmd === "FINISH MESSAGE") {
+    if (state.spellingWord.trim()) logEvent(state.spellingWord.trim());
+    showAnythingElse();
+    return;
+  }
+  spellingScanRows();
+}
+
+function showSpellingDeleteConfirm() {
+  const char = state.spellingWord.slice(-1) || "character";
+  const container = document.getElementById("spelling-row-items");
+  document.getElementById("spelling-row-label").textContent = `Delete "${char}"?`;
+  const opts = [{ label: "NO — cancel", color: "red" }, { label: "YES — delete", color: "green" }];
+  startScan(opts, (label) => {
+    stopScan();
+    state.pendingSpellingDelete = false;
+    if (label.startsWith("YES")) state.spellingWord = state.spellingWord.slice(0, -1);
+    spellingScanRows();
+  }, { container, screenId: "spelling", colorMap: [COLORS.red, COLORS.green], showIcons: false });
+}
+
+function showQuickYesNo(returnScreen) {
+  state.quickYesNoReturnScreen = returnScreen || "home";
+  showScreen("quick-yes-no");
+  const opts = [{ label: "NO" }, { label: "YES" }];
+  const noEl = document.getElementById("quick-no");
+  const yesEl = document.getElementById("quick-yes");
+  noEl.innerHTML = `<span class="scan-item-countdown quick-countdown"></span><i data-lucide="thumbs-down" class="quick-half-icon"></i><span>NO</span>`;
+  yesEl.innerHTML = `<span class="scan-item-countdown quick-countdown"></span><i data-lucide="thumbs-up" class="quick-half-icon"></i><span>YES</span>`;
+  noEl.classList.add("scan-item");
+  yesEl.classList.add("scan-item");
+  noEl.dataset.index = "0";
+  yesEl.dataset.index = "1";
+  if (typeof lucide !== "undefined") lucide.createIcons({ root: document.getElementById("screen-quick-yes-no") });
+  state.scanItems = opts;
+  state.onScanSelect = (label) => {
+    stopScan();
+    noEl.classList.remove("scan-item", "active");
+    yesEl.classList.remove("scan-item", "active");
+    logEvent(label);
+    state.lastSelection = label;
+    showScreen("confirm");
+    document.getElementById("confirm-item").textContent = "You said: " + label;
+    document.getElementById("confirm-options").innerHTML = "";
+    setTimeout(() => {
+      if (state.quickYesNoReturnScreen === "face_ready") showScreen("face_ready");
+      else goHome();
+    }, 2000);
+  };
+  state.scanIndex = 0;
+  const both = [noEl, yesEl];
+  const scanDuration = getScanDurationMs();
+  function tick() {
+    if (state.paused || state.screen !== "quick-yes-no") return;
+    if (state.blinkStart > 0) return;
+    state.scanTickStart = Date.now();
+    state.scanTickDuration = scanDuration;
+    both.forEach((el, i) => { el.classList.toggle("active", i === state.scanIndex); addBlinkProgress(el, 0); });
+    if (config.auditory_scanning) speak(opts[state.scanIndex].label);
+    runCountdownUpdate();
+    state.scanIndex = (state.scanIndex + 1) % 2;
+  }
+  tick();
+  state.scanInterval = setInterval(tick, scanDuration);
+}
+
+const ROOT_MAX = 6;
+const SECTION_GROUP_MAX = 6;
+const ITEMS_PER_GROUP_MAX = 6;
+const FIXED_ROOT_IDS = ["spelling", "quick_yes_no"];
+const NAV_TO_BOARD = { urgent_needs: "board_2_urgent", comfort_care: "board_3_comfort" };
+
+function getBoardKey(navId) {
+  return NAV_TO_BOARD[navId] || navId;
+}
+
+function openCustomizeModal() {
+  state.customizeDraft = JSON.parse(JSON.stringify(state.config || { boards: {}, navigation_root: { scan_order: [] } }));
+  state.customizePath = [];
+  document.getElementById("customize-modal").classList.remove("hidden");
+  renderCustomizeView();
+}
+
+function closeCustomizeModal() {
+  document.getElementById("customize-modal").classList.add("hidden");
+}
+
+function showCustomizeSavedHint() {
+  const footer = document.querySelector("#customize-modal .customize-footer");
+  if (!footer) return;
+  const existing = footer.querySelector(".customize-saved-hint");
+  if (existing) existing.remove();
+  const hint = document.createElement("span");
+  hint.className = "customize-saved-hint";
+  hint.textContent = "Saved";
+  hint.style.cssText = "margin-left:14px;color:var(--success);font-size:15px;font-weight:500;";
+  footer.appendChild(hint);
+  setTimeout(() => hint.remove(), 2000);
+}
+
+function customizeNavigateTo(path) {
+  state.customizePath = path;
+  renderCustomizeView();
+}
+
+function renderCustomizeView() {
+  const draft = state.customizeDraft || state.config;
+  const boards = draft?.boards || {};
+  const nav = draft?.navigation_root || {};
+  const path = state.customizePath || [];
+  const list = document.getElementById("customize-list");
+  const helpEl = document.getElementById("customize-help");
+  const addBtn = document.getElementById("btn-customize-add");
+  const addGroupBtn = document.getElementById("btn-customize-add-group");
+  const breadcrumb = document.getElementById("customize-breadcrumb");
+
+  function crumbKeyToPath(k) {
+    if (k === undefined || k === null || k === "") return [];
+    const parts = k.split("\x1e");
+    if (parts.length === 1) return [parts[0]];
+    const p = [parts[0]];
+    if (parts[1] !== undefined) p.push(parseInt(parts[1], 10));
+    if (parts[2] !== undefined) p.push(parseInt(parts[2], 10));
+    return p;
+  }
+
+  function breadcrumbHtml() {
+    const parts = [];
+    parts.push(`<span class="crumb" data-crumb="">Main screen</span>`);
+    if (path.length >= 1) {
+      const boardKey = path[0];
+      const board = boards[boardKey] || content?.boards?.[boardKey];
+      const boardLabel = board?.label || boardKey;
+      parts.push(`<span class="sep">›</span>`);
+      if (path.length === 1) {
+        parts.push(`<span class="crumb-current">${escapeHtml(boardLabel)}</span>`);
+      } else {
+        parts.push(`<span class="crumb" data-crumb="${escapeHtml(boardKey)}">${escapeHtml(boardLabel)}</span>`);
+      }
+    }
+    if (path.length >= 2) {
+      const boardKey = path[0];
+      const groupIdx = path[1];
+      const board = boards[boardKey] || content?.boards?.[boardKey];
+      const group = (board?.groups || [])[groupIdx];
+      const groupLabel = group?.label || `Group ${groupIdx + 1}`;
+      parts.push(`<span class="sep">›</span>`);
+      if (path.length === 2) {
+        parts.push(`<span class="crumb-current">${escapeHtml(groupLabel)}</span>`);
+      } else {
+        parts.push(`<span class="crumb" data-crumb="${escapeHtml(boardKey + "\x1e" + groupIdx)}">${escapeHtml(groupLabel)}</span>`);
+      }
+    }
+    if (path.length >= 3) {
+      const boardKey = path[0];
+      const groupIdx = path[1];
+      const itemIdx = path[2];
+      const board = boards[boardKey] || content?.boards?.[boardKey];
+      const group = (board?.groups || [])[groupIdx];
+      const item = (group?.items || [])[itemIdx];
+      const itemLabel = typeof item === "string" ? item : item?.label || `Item ${itemIdx + 1}`;
+      parts.push(`<span class="sep">›</span>`);
+      parts.push(`<span class="crumb-current">${escapeHtml(itemLabel)}</span>`);
+    }
+    return parts.join("");
+  }
+
+  breadcrumb.innerHTML = breadcrumbHtml();
+  breadcrumb.querySelectorAll(".crumb[data-crumb]").forEach(el => {
+    el.addEventListener("click", () => {
+      const k = el.getAttribute("data-crumb");
+      const p = crumbKeyToPath(k);
+      customizeNavigateTo(p);
+    });
+  });
+
+  if (path.length === 0) {
+    const order = nav.scan_order || ["urgent_needs", "comfort_care", "spelling", "quick_yes_no"];
+    const builtInLabels = { urgent_needs: "Urgent needs", comfort_care: "Comfort and care", spelling: "Spell a word", quick_yes_no: "Quick yes or no" };
+    helpEl.textContent = "Main categories on home screen. Click a category to add or edit its contents. Up to 6. Drag to reorder. Spelling and Quick yes/no are fixed.";
+    addBtn.textContent = "+ Add new item";
+    addBtn.disabled = order.length >= ROOT_MAX;
+    if (addGroupBtn) { addGroupBtn.textContent = "+ Add new group"; addGroupBtn.classList.remove("hidden"); addGroupBtn.disabled = order.length >= ROOT_MAX; }
+    const isBoard = (sid) => !FIXED_ROOT_IDS.includes(sid) && (NAV_TO_BOARD[sid] || boards[sid]);
+    list.innerHTML = order.map(sid => {
+      const label = builtInLabels[sid] || boards[sid]?.label || sid;
+      const fixed = FIXED_ROOT_IDS.includes(sid);
+      const canEnter = isBoard(sid);
+      const openBtn = canEnter ? `<button type="button" class="tile-open" data-id="${escapeHtml(sid)}">Open ›</button>` : "";
+      const removeBtn = fixed ? "" : `<button type="button" class="tile-remove" data-id="${escapeHtml(sid)}" aria-label="Remove">\u2715</button>`;
+      return `<li data-id="${escapeHtml(sid)}" data-enter="${canEnter}" draggable="${!fixed}" ${fixed ? 'data-fixed="1"' : ""}>
+        <span class="drag-handle" aria-hidden="true">\u2630</span>
+        <span class="tile-label">${escapeHtml(label)}</span>
+        ${openBtn}
+        ${removeBtn}
+      </li>`;
+    }).join("");
+    list.querySelectorAll(".tile-open").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const sid = btn.dataset.id;
+        const boardKey = getBoardKey(sid);
+        customizeNavigateTo([boardKey]);
+      });
+    });
+    list.querySelectorAll(".tile-remove").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const id = btn.dataset.id;
+        if (!id || FIXED_ROOT_IDS.includes(id)) return;
+        const order = (state.customizeDraft?.navigation_root?.scan_order || []).filter(x => x !== id);
+        state.customizeDraft.navigation_root = { ...state.customizeDraft.navigation_root, scan_order: order };
+        if (state.customizeDraft.boards) delete state.customizeDraft.boards[id];
+        renderCustomizeView();
+      });
+    });
+  } else if (path.length === 1) {
+    const boardKey = path[0];
+    const board = boards[boardKey] || content?.boards?.[boardKey] || { label: "", groups: [] };
+    const groups = [...(board.groups || [])];
+    helpEl.textContent = "Sub-categories. Click one to add or edit items inside. Up to 6.";
+    addBtn.textContent = "+ Add new item";
+    addBtn.disabled = groups.length >= SECTION_GROUP_MAX;
+    if (addGroupBtn) { addGroupBtn.textContent = "+ Add new group"; addGroupBtn.classList.remove("hidden"); addGroupBtn.disabled = groups.length >= SECTION_GROUP_MAX; }
+    list.innerHTML = groups.map((g, i) => `
+      <li data-index="${i}" data-id="${escapeHtml(g.id || "")}" data-enter="true" draggable="true">
+        <span class="drag-handle" aria-hidden="true">\u2630</span>
+        <span class="tile-label">${escapeHtml(g.label || "")}</span>
+        <button type="button" class="tile-open" data-index="${i}">Open ›</button>
+        <button type="button" class="tile-remove" data-index="${i}" aria-label="Remove">\u2715</button>
+      </li>`).join("");
+    list.querySelectorAll(".tile-open").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        customizeNavigateTo([boardKey, parseInt(btn.dataset.index, 10)]);
+      });
+    });
+    list.querySelectorAll(".tile-remove").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const idx = parseInt(btn.dataset.index, 10);
+        if (isNaN(idx)) return;
+        const newGroups = groups.filter((_, i) => i !== idx);
+        if (newGroups.length === 0) return;
+        state.customizeDraft.boards = { ...state.customizeDraft.boards, [boardKey]: { ...board, groups: newGroups } };
+        renderCustomizeView();
+      });
+    });
+  } else if (path.length === 2) {
+    const [boardKey, groupIdx] = path;
+    const board = boards[boardKey] || content?.boards?.[boardKey] || { groups: [] };
+    const group = (board.groups || [])[groupIdx] || { items: [] };
+    const items = [...(group.items || [])];
+    helpEl.textContent = "Selectable items. Items with › have sub-options — click to edit them. Up to 6 each.";
+    addBtn.textContent = "+ Add new item";
+    addBtn.disabled = items.length >= ITEMS_PER_GROUP_MAX;
+    if (addGroupBtn) { addGroupBtn.textContent = "+ Add new group"; addGroupBtn.classList.remove("hidden"); addGroupBtn.disabled = items.length >= ITEMS_PER_GROUP_MAX; }
+    list.innerHTML = items.map((it, i) => {
+      const label = typeof it === "string" ? it : (it?.label || "");
+      const hasSub = typeof it === "object" && it && Array.isArray(it.subItems) && it.subItems.length > 0;
+      const openBtn = hasSub ? `<button type="button" class="tile-open" data-index="${i}">Open options ›</button>` : "";
+      return `<li data-index="${i}" data-enter="${hasSub}" draggable="true">
+        <span class="drag-handle" aria-hidden="true">\u2630</span>
+        <span class="tile-label">${escapeHtml(label)}</span>
+        ${openBtn}
+        <button type="button" class="tile-remove" data-index="${i}" aria-label="Remove">\u2715</button>
+      </li>`;
+    }).join("");
+    list.querySelectorAll(".tile-open").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        customizeNavigateTo([boardKey, groupIdx, parseInt(btn.dataset.index, 10)]);
+      });
+    });
+    list.querySelectorAll(".tile-remove").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const idx = parseInt(btn.dataset.index, 10);
+        if (isNaN(idx)) return;
+        const newItems = items.filter((_, i) => i !== idx);
+        const newGroups = [...(board.groups || [])];
+        newGroups[groupIdx] = { ...group, items: newItems };
+        state.customizeDraft.boards = { ...state.customizeDraft.boards, [boardKey]: { ...board, groups: newGroups } };
+        renderCustomizeView();
+      });
+    });
+  } else if (path.length === 3) {
+    const [boardKey, groupIdx, itemIdx] = path;
+    const board = boards[boardKey] || content?.boards?.[boardKey] || { groups: [] };
+    const group = (board.groups || [])[groupIdx] || { items: [] };
+    const item = (group.items || [])[itemIdx];
+    const subItems = (typeof item === "object" && item?.subItems) ? [...item.subItems] : [];
+    const parentLabel = typeof item === "string" ? item : item?.label || "Item";
+    helpEl.textContent = `Sub-options for "${parentLabel}". Shown when patient selects the parent. Up to 6.`;
+    addBtn.textContent = "+ Add new item";
+    addBtn.disabled = subItems.length >= ITEMS_PER_GROUP_MAX;
+    if (addGroupBtn) addGroupBtn.classList.add("hidden");
+    list.innerHTML = subItems.map((s, i) => `
+      <li data-index="${i}" draggable="true">
+        <span class="drag-handle" aria-hidden="true">\u2630</span>
+        <span class="tile-label">${escapeHtml(typeof s === "string" ? s : s?.label || "")}</span>
+        <button type="button" class="tile-remove" data-index="${i}" aria-label="Remove">\u2715</button>
+      </li>`).join("");
+    list.querySelectorAll(".tile-remove").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const idx = parseInt(btn.dataset.index, 10);
+        if (isNaN(idx)) return;
+        const newSub = subItems.filter((_, i) => i !== idx);
+        const newItems = [...(group.items || [])];
+        const updatedItem = typeof item === "object" ? { ...item, subItems: newSub } : { label: item, subItems: newSub };
+        newItems[itemIdx] = updatedItem;
+        const newGroups = [...(board.groups || [])];
+        newGroups[groupIdx] = { ...group, items: newItems };
+        state.customizeDraft.boards = { ...state.customizeDraft.boards, [boardKey]: { ...board, groups: newGroups } };
+        renderCustomizeView();
+      });
+    });
+  }
+
+  addBtn.onclick = () => customizeAddAt(path, draft, boards, nav);
+  if (addGroupBtn) {
+    if (path.length === 2) {
+      addGroupBtn.onclick = () => customizeAddParentItem(path, draft, boards, nav);
+    } else if (path.length <= 1) {
+      addGroupBtn.onclick = () => customizeAddAt(path, draft, boards, nav);
+    }
+  }
+  setupCustomizeDragDrop(list, path, draft, boards, nav);
+}
+
+function setupCustomizeDragDrop(list, path, draft, boards, nav) {
+  if (!list) return;
+  let dragged = null;
+  list.querySelectorAll("li[draggable='true']").forEach(li => {
+    li.ondragstart = (e) => { dragged = li; li.classList.add("dragging"); e.dataTransfer.effectAllowed = "move"; };
+    li.ondragend = () => { li.classList.remove("dragging"); dragged = null; };
+    li.ondragover = (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; if (dragged && dragged !== li) li.classList.add("drag-over"); };
+    li.ondragleave = () => li.classList.remove("drag-over");
+    li.ondrop = (e) => {
+      e.preventDefault();
+      li.classList.remove("drag-over");
+      if (!dragged || dragged === li) return;
+      const items = [...list.querySelectorAll("li")];
+      const fromIdx = items.indexOf(dragged);
+      const toIdx = items.indexOf(li);
+      if (fromIdx < 0 || toIdx < 0) return;
+      if (path.length === 0) {
+        const order = [...(draft?.navigation_root?.scan_order || [])];
+        const [removed] = order.splice(fromIdx, 1);
+        order.splice(toIdx, 0, removed);
+        state.customizeDraft.navigation_root = { ...state.customizeDraft.navigation_root, scan_order: order };
+      } else if (path.length === 1) {
+        const boardKey = path[0];
+        const board = state.customizeDraft?.boards?.[boardKey] || { groups: [] };
+        const groups = [...(board.groups || [])];
+        const [removed] = groups.splice(fromIdx, 1);
+        groups.splice(toIdx, 0, removed);
+        state.customizeDraft.boards = { ...state.customizeDraft.boards, [boardKey]: { ...board, groups } };
+      } else if (path.length === 2) {
+        const [boardKey, groupIdx] = path;
+        const board = state.customizeDraft?.boards?.[boardKey] || { groups: [] };
+        const group = (board.groups || [])[groupIdx] || { items: [] };
+        const itemsArr = [...(group.items || [])];
+        const [removed] = itemsArr.splice(fromIdx, 1);
+        itemsArr.splice(toIdx, 0, removed);
+        const newGroups = [...(board.groups || [])];
+        newGroups[groupIdx] = { ...group, items: itemsArr };
+        state.customizeDraft.boards = { ...state.customizeDraft.boards, [boardKey]: { ...board, groups: newGroups } };
+      } else if (path.length === 3) {
+        const [boardKey, groupIdx, itemIdx] = path;
+        const board = state.customizeDraft?.boards?.[boardKey] || { groups: [] };
+        const group = (board.groups || [])[groupIdx] || { items: [] };
+        const item = (group.items || [])[itemIdx];
+        const subItems = (typeof item === "object" && item?.subItems) ? [...item.subItems] : [];
+        const [removed] = subItems.splice(fromIdx, 1);
+        subItems.splice(toIdx, 0, removed);
+        const newItems = [...(group.items || [])];
+        const updatedItem = typeof item === "object" ? { ...item, subItems } : { label: item, subItems };
+        newItems[itemIdx] = updatedItem;
+        const newGroups = [...(board.groups || [])];
+        newGroups[groupIdx] = { ...group, items: newItems };
+        state.customizeDraft.boards = { ...state.customizeDraft.boards, [boardKey]: { ...board, groups: newGroups } };
+      }
+      renderCustomizeView();
+    };
+  });
+}
+
+function customizeAddAt(path, draft, boards, nav) {
+  if (path.length === 0) {
+    const label = prompt("New category label:");
+    if (!label || !label.trim()) return;
+    const colors = ["red", "green", "blue", "orange", "pink", "yellow", "white"];
+    const id = "board_custom_" + Date.now();
+    const order = [...(nav?.scan_order || [])];
+    if (order.length >= ROOT_MAX) return;
+    order.splice(Math.max(0, order.indexOf("spelling")), 0, id);
+    state.customizeDraft.boards = { ...state.customizeDraft.boards, [id]: { label: label.trim(), color: colors[order.length % colors.length], groups: [] } };
+    state.customizeDraft.navigation_root = { ...state.customizeDraft.navigation_root, scan_order: order };
+  } else if (path.length === 1) {
+    const label = prompt("New sub-category label:");
+    if (!label || !label.trim()) return;
+    const boardKey = path[0];
+    const board = state.customizeDraft?.boards?.[boardKey] || content?.boards?.[boardKey] || { groups: [] };
+    const groups = [...(board.groups || []), { id: "group_" + Date.now(), label: label.trim(), color: "white", items: [] }];
+    if (groups.length > SECTION_GROUP_MAX) return;
+    state.customizeDraft.boards = { ...state.customizeDraft.boards, [boardKey]: { ...board, groups } };
+  } else if (path.length === 2) {
+    const label = prompt("New item label:");
+    if (!label || !label.trim()) return;
+    const boardKey = path[0];
+    const groupIdx = path[1];
+    const board = state.customizeDraft?.boards?.[boardKey] || { groups: [] };
+    const group = (board.groups || [])[groupIdx] || { items: [] };
+    const items = [...(group.items || []), label.trim()];
+    if (items.length >= ITEMS_PER_GROUP_MAX) return;
+    const newGroups = [...(board.groups || [])];
+    newGroups[groupIdx] = { ...group, items };
+    state.customizeDraft.boards = { ...state.customizeDraft.boards, [boardKey]: { ...board, groups: newGroups } };
+  } else if (path.length === 3) {
+    const label = prompt("New sub-option label:");
+    if (!label || !label.trim()) return;
+    const [boardKey, groupIdx, itemIdx] = path;
+    const board = state.customizeDraft?.boards?.[boardKey] || { groups: [] };
+    const group = (board.groups || [])[groupIdx] || { items: [] };
+    const item = (group.items || [])[itemIdx];
+    const subItems = (typeof item === "object" && item?.subItems) ? [...item.subItems] : [];
+    if (subItems.length >= ITEMS_PER_GROUP_MAX) return;
+    subItems.push(label.trim());
+    const newItems = [...(group.items || [])];
+    const updatedItem = typeof item === "object" ? { ...item, subItems } : { label: item, subItems };
+    newItems[itemIdx] = updatedItem;
+    const newGroups = [...(board.groups || [])];
+    newGroups[groupIdx] = { ...group, items: newItems };
+    state.customizeDraft.boards = { ...state.customizeDraft.boards, [boardKey]: { ...board, groups: newGroups } };
+  }
+  renderCustomizeView();
+}
+
+function customizeAddParentItem(path, draft, boards, nav) {
+  if (path.length !== 2) return;
+  const label = prompt("Parent item label (e.g. 'Arms and elbows'):");
+  if (!label || !label.trim()) return;
+  const [boardKey, groupIdx] = path;
+  const board = state.customizeDraft?.boards?.[boardKey] || { groups: [] };
+  const group = (board.groups || [])[groupIdx] || { items: [] };
+  const items = [...(group.items || []), { label: label.trim(), subItems: [] }];
+  if (items.length >= ITEMS_PER_GROUP_MAX) return;
+  const newGroups = [...(board.groups || [])];
+  newGroups[groupIdx] = { ...group, items };
+  state.customizeDraft.boards = { ...state.customizeDraft.boards, [boardKey]: { ...board, groups: newGroups } };
+  customizeNavigateTo([boardKey, groupIdx, items.length - 1]);
+}
+
+async function saveCustomize() {
+  const cfg = state.customizeDraft;
+  if (!cfg) return;
+  if (!supabaseClient) initSupabase();
+  const toSave = { boards: cfg.boards, navigation_root: cfg.navigation_root };
+  const ok = await saveConfigToSupabase(toSave);
+  if (ok) {
+    state.config = { ...state.config, ...toSave };
+    showCustomizeSavedHint();
+  } else {
+    const err = window.__lastSupabaseError || "unknown";
+    alert("Could not save. " + (err.includes("apikey") || err.includes("invalid") ? "Try the Legacy anon key (Project Settings → API Keys → Legacy tab)." : "Check console for details."));
+  }
+}
+
+function updateSummaryPatientView() {
+  const hist = loadCommunicationHistory();
+  const pending = [...hist].filter(e => !e.done).reverse();
+  const mostRecent = pending[0] || null;
+  const others = pending.slice(1);
+  const label = state.lastSelection || (mostRecent && mostRecent.label) || "";
+  const time = mostRecent ? mostRecent.time : "";
+  const currentBlock = document.getElementById("summary-current-block");
+  const saidAtEl = document.getElementById("summary-you-said-at");
+  const markDoneEl = document.getElementById("summary-mark-done-current");
+  const alsoWrap = document.getElementById("summary-also-waiting-wrap");
+  const pendingEl = document.getElementById("summary-pending-list");
+  if (currentBlock && saidAtEl) {
+    const hasCurrent = !!label;
+    currentBlock.classList.toggle("summary-current-empty", !hasCurrent);
+    saidAtEl.innerHTML = hasCurrent
+      ? `You said at ${time} that "${label}". <span class="summary-status-inline">Status: waiting for caregiver.</span>`
+      : "";
+  }
+  if (markDoneEl) {
+    const cb = markDoneEl.querySelector("input[type=checkbox]");
+    if (cb && mostRecent) {
+      cb.checked = false;
+      cb.dataset.id = mostRecent.id;
+      markDoneEl.style.display = "flex";
+      cb.onchange = () => {
+        const id = cb.dataset.id;
+        if (id) {
+          setHistoryDone(id, cb.checked);
+          updateSummaryPatientView();
+          renderSummaryRequestCards();
+        }
+      };
+    } else {
+      markDoneEl.style.display = "none";
+    }
+  }
+  if (alsoWrap && pendingEl) {
+    if (others.length > 0) {
+      alsoWrap.classList.remove("summary-also-empty");
+      pendingEl.innerHTML = others.map(e => `
+        <label class="summary-pending-row" data-id="${escapeHtml(e.id)}">
+          <input type="checkbox" aria-label="Mark as done">
+          <span class="summary-pending-time">${escapeHtml(e.time)}</span>
+          <span class="summary-pending-label">${escapeHtml(e.label)}</span>
+        </label>`).join("");
+      pendingEl.querySelectorAll("input[type=checkbox]").forEach((input, idx) => {
+        const row = input.closest(".summary-pending-row");
+        const id = row?.dataset?.id;
+        if (!id) return;
+        input.onchange = () => {
+          setHistoryDone(id, input.checked);
+          updateSummaryPatientView();
+          renderSummaryRequestCards();
+        };
+      });
+    } else {
+      alsoWrap.classList.add("summary-also-empty");
+      pendingEl.innerHTML = "";
+    }
+  }
+}
+
+function showSummary() {
+  stopScan();
+  showScreen("summary");
+  state.summaryBlinkCount = 0;
+  state.summaryLastBlinkTime = 0;
+  renderSummaryRequestCards();
+  updateSummaryPatientView();
+  updateSummaryBlinkPrompt();
+}
+
+function renderSummaryRequestCards() {
+  const hist = loadCommunicationHistory();
+  const slice = [...hist].reverse().slice(0, SUMMARY_EVENT_MAX_ROWS);
+  const pending = slice.filter(e => !e.done);
+  const mostRecent = pending[0] || null;
+  const latestBlock = document.getElementById("summary-latest-block");
+  const latestTime = document.getElementById("summary-latest-time");
+  const latestLabel = document.getElementById("summary-latest-label");
+  if (latestBlock && latestTime && latestLabel) {
+    if (mostRecent) {
+      latestBlock.classList.remove("summary-latest-empty");
+      latestTime.textContent = mostRecent.time;
+      latestLabel.textContent = mostRecent.label;
+    } else {
+      latestBlock.classList.add("summary-latest-empty");
+      latestTime.textContent = "";
+      latestLabel.textContent = "";
+    }
+  }
+  const el = document.getElementById("summary-event-log");
+  if (!el) return;
+  const completed = slice.filter(e => e.done);
+  const card = (e) => `
+    <div class="summary-request-card ${e.done ? "summary-done" : ""}" data-id="${escapeHtml(e.id)}">
+      <span class="summary-card-time">${escapeHtml(e.time)}</span>
+      <span class="summary-card-label">${escapeHtml(e.label)}</span>
+      <label class="summary-card-done"><input type="checkbox" ${e.done ? "checked" : ""} aria-label="Taken care of"> Done</label>
+    </div>`;
+  let html = "";
+  if (pending.length > 0) {
+    html += `<h3 class="summary-section-title">Pending</h3>${pending.map(card).join("")}`;
+  }
+  if (completed.length > 0) {
+    html += `<h3 class="summary-section-title">Completed</h3>${completed.map(card).join("")}`;
+  }
+  if (!html) html = '<p class="event-empty">No requests yet.</p>';
+  if (hist.length > SUMMARY_EVENT_MAX_ROWS) {
+    html += `<p class="summary-more-hint">Last ${SUMMARY_EVENT_MAX_ROWS} shown — click Summary in nav for full history.</p>`;
+  }
+  el.innerHTML = html;
+  el.querySelectorAll(".summary-card-done input").forEach(cb => {
+    cb.addEventListener("change", () => {
+      const cardEl = cb.closest(".summary-request-card");
+      const id = cardEl?.dataset?.id;
+      if (id) {
+        setHistoryDone(id, cb.checked);
+        cardEl?.classList.toggle("summary-done", cb.checked);
+        renderSummaryRequestCards();
+        if (state.screen === "summary") updateSummaryPatientView();
+      }
+    });
+  });
+}
+
+function updateSummaryBlinkPrompt() {
+  const el = document.getElementById("summary-blink-count");
+  if (!el || state.screen !== "summary") return;
+  if (state.summaryBlinkCount === 0) {
+    el.textContent = "";
+  } else {
+    el.textContent = `${state.summaryBlinkCount} of 3`;
+  }
+}
+
+function escapeHtml(s) {
+  const div = document.createElement("div");
+  div.textContent = s;
+  return div.innerHTML;
+}
+
+function showEmergency() {
+  stopScan();
+  document.getElementById("screen-emergency").classList.remove("hidden");
+  document.getElementById("screen-emergency").classList.add("active");
+  playAlarm();
+}
+
+function initFaceLandmarker() {
+  return import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs").then(async ({ FaceLandmarker, FilesetResolver }) => {
+    const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm");
+    state.faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+      baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task" },
+      outputFaceBlendshapes: false,
+      runningMode: "VIDEO",
+      numFaces: 1
+    });
+  });
+}
+
+function processFrame() {
+  if (state.paused) {
+    requestAnimationFrame(processFrame);
+    return;
+  }
+  if (!state.faceLandmarker || !state.video?.readyState) {
+    requestAnimationFrame(processFrame);
+    return;
+  }
+  const now = Date.now();
+  const timestamp = performance.now();
+  const results = state.faceLandmarker.detectForVideo(state.video, timestamp);
+  const faceOutline = document.getElementById("face-outline");
+  let eyesClosed = false;
+  const wasDetected = state.faceDetected;
+  state.faceDetected = !!(results.faceLandmarks && results.faceLandmarks[0]);
+  if (state.screen === "face_ready") {
+    if (!state.faceDetected) faceNotDetectedSeconds += 1 / 60;
+    else faceNotDetectedSeconds = 0;
+    const shouldShowIdle = !state.faceDetected && faceNotDetectedSeconds >= 10;
+    if (state.faceDetected !== wasDetected) {
+      updateFaceStatusText();
+      updateStatusFaceIcon();
+    }
+    else if (shouldShowIdle && !idleMessageShown) updateFaceStatusText();
+  }
+
+  if (state.faceDetected) {
+    faceOutline?.classList.remove("hidden");
+    state.faceLostAt = null;
+    document.getElementById("face-lost-overlay")?.classList.add("hidden");
+    const landmarks = results.faceLandmarks[0];
+    const leftEAR = eyeAspectRatio(landmarks, LEFT_EYE);
+    const rightEAR = eyeAspectRatio(landmarks, RIGHT_EYE);
+    eyesClosed = Math.min(leftEAR, rightEAR) < 0.2;
+  } else {
+    faceOutline?.classList.add("hidden");
+    if (state.screen !== "face_ready" && state.screen !== "emergency") {
+      if (!state.faceLostAt) state.faceLostAt = Date.now();
+      document.getElementById("face-lost-overlay")?.classList.remove("hidden");
+      if (state.faceLostAt && Date.now() - state.faceLostAt >= 180000) {
+        stopScan();
+        showScreen("face_ready");
+        state.faceLostAt = null;
+        document.getElementById("face-lost-overlay")?.classList.add("hidden");
+      }
+    }
+  }
+
+  if (eyesClosed) {
+    if (state.blinkStart === 0) state.blinkStart = now;
+    const duration = now - state.blinkStart;
+    if (duration >= config.emergency_blink_ms && !state.calibrationMode) {
+      showEmergency();
+      state.blinkStart = 0;
+      state.cooldownUntil = now + 3000;
+      return;
+    }
+    const threshold = getSelectionBlinkThresholdMs();
+    const progress = duration / threshold;
+    document.querySelectorAll(".scan-item.active").forEach(el => addBlinkProgress(el, progress));
+    if (!state.calibrationMode && duration >= threshold && now > state.cooldownUntil) {
+      state.cooldownUntil = now + 1500;
+      state.blinkStart = 0;
+      document.dispatchEvent(new CustomEvent("blink-select"));
+    }
+  } else {
+    if (state.blinkStart > 0) {
+      const blinkDuration = now - state.blinkStart;
+      if (state.calibrationMode) handleCalibrationBlink(blinkDuration);
+      else if (state.scanInterval) state.scanTickStart += blinkDuration;
+    }
+    state.blinkStart = 0;
+    document.querySelectorAll(".scan-item").forEach(el => addBlinkProgress(el, 0));
+  }
+  requestAnimationFrame(processFrame);
+}
+
+function triggerSelectByIndex(index) {
+  if (!state.onScanSelect || !state.scanItems?.length || state.paused) return;
+  const items = state.scanItems;
+  const idx = (index + items.length) % items.length;
+  const item = items[idx];
+  const label = typeof item === "string" ? item : (item?.label ?? item);
+  stopScan();
+  playBeep(1200, 300);
+  const cb = state.onScanSelect;
+  state.onScanSelect = null;
+  if (cb) cb(label, item);
+}
+
+document.getElementById("app").addEventListener("click", (e) => {
+  if (e.target.closest("input[type=checkbox]")) return;
+  const card = e.target.closest(".scan-item[data-index]");
+  if (!card) return;
+  const idx = parseInt(card.dataset.index, 10);
+  if (isNaN(idx)) return;
+  if (state.onScanSelect && state.scanItems?.length && !state.paused) triggerSelectByIndex(idx);
+});
+
+async function unpauseSession() {
+  state.paused = false;
+  const btn = document.getElementById("btn-pause");
+  const patientPause = document.getElementById("btn-pause-patient");
+  if (btn) { btn.textContent = "Pause"; btn.classList.remove("paused"); }
+  if (patientPause) patientPause.textContent = "Pause";
+  document.getElementById("pause-overlay")?.classList.add("hidden");
+  try { await startCamera(); } catch (e) { console.warn("Camera restart failed:", e); }
+}
+
+function stopCamera() {
+  if (state.stream) {
+    state.stream.getTracks().forEach(t => t.stop());
+    state.stream = null;
+  }
+  if (state.video) {
+    state.video.srcObject = null;
+  }
+}
+
+document.addEventListener("blink-select", () => {
+  if (state.paused) return;
+  if (state.screen === "face_ready") {
+    state.faceReadyBlinkCount++;
+    playBeep(1000 + state.faceReadyBlinkCount * 100, 150);
+    updateFaceReadyBlinkHint();
+    if (state.faceReadyBlinkCount >= 2) {
+      state.faceReadyBlinkCount = 0;
+      state.session = [];
+      playBeep(1200, 400);
+      localStorage.setItem("bedsideblink_calibration", JSON.stringify({ selection_blink_ms: config.selection_blink_ms, calibrationCompleted: state.calibrationCompleted }));
+      showScreen("home");
+      goHome();
+    }
+    return;
+  }
+  if (state.screen === "summary") {
+    const now = Date.now();
+    if (now - state.summaryLastBlinkTime > state.SUMMARY_BLINK_WINDOW_MS) state.summaryBlinkCount = 0;
+    state.summaryLastBlinkTime = now;
+    state.summaryBlinkCount++;
+    playBeep(1000 + state.summaryBlinkCount * 80, 150);
+    updateSummaryBlinkPrompt();
+    if (state.summaryBlinkCount >= 3) {
+      state.summaryBlinkCount = 0;
+      playBeep(1200, 400);
+      goHome();
+    }
+    return;
+  }
+  if (!state.onScanSelect || !state.scanItems?.length) return;
+  playBeep(1200, 300);
+  const items = state.scanItems;
+  const idx = (state.scanIndex - 1 + items.length) % items.length;
+  const item = items[idx];
+  const label = typeof item === "string" ? item : (item?.label ?? item);
+  const cb = state.onScanSelect;
+  state.onScanSelect = null;
+  if (cb) cb(label, item);
+});
+
+async function startCamera() {
+  state.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: 640, height: 480 }, audio: false });
+  state.video = document.getElementById("video");
+  state.video.srcObject = state.stream;
+  await state.video.play();
+}
+
+function showInitError(msg) {
+  const container = document.querySelector(".camera-container");
+  if (container) {
+    container.innerHTML = `<div style="padding:40px 24px;text-align:center;color:#fca5a5;font-size:18px;line-height:1.6;">${msg}</div>`;
+  }
+  const instr = document.querySelector(".instruction");
+  if (instr) instr.insertAdjacentHTML("afterend", `<p style="color:#fca5a5;font-size:16px;margin-top:12px;">${msg}</p>`);
+}
+
+async function init() {
+  if (location.protocol === "file:") {
+    showInitError("Please run the server: cd BedsideBlink && bash serve.sh — then open http://localhost:8080 in your browser.");
+    return;
+  }
+  if (speechSynthesis.getVoices().length) pickDefaultVoice();
+  speechSynthesis.onvoiceschanged = () => pickDefaultVoice();
+  state.caregiverMode = localStorage.getItem(CAREGIVER_MODE_KEY) === "1";
+  document.body.classList.toggle("patient-mode", !state.caregiverMode);
+  const cgBtn = document.getElementById("caregiver-toggle");
+  if (cgBtn) cgBtn.textContent = state.caregiverMode ? "Patient view" : "Caregiver";
+  updateStatusHint();
+  document.querySelector(".camera-container")?.insertAdjacentHTML("beforeend", '<p class="init-status" style="position:absolute;bottom:12px;left:0;right:0;text-align:center;color:#94a3b8;font-size:14px;">Loading…</p>');
+  try {
+    await loadContent();
+  } catch (e) {
+    showInitError("Config load failed: " + e.message);
+    return;
+  }
+  document.querySelector(".init-status")?.remove();
+  document.getElementById("btn-start").addEventListener("click", () => {
+    state.session = [];
+    showScreen("home");
+    goHome();
+  });
+  document.getElementById("btn-pause").addEventListener("click", async () => {
+    state.paused = !state.paused;
+    const btn = document.getElementById("btn-pause");
+    const patientPause = document.getElementById("btn-pause-patient");
+    const text = state.paused ? "Resume" : "Pause";
+    if (btn) { btn.textContent = text; btn.classList.toggle("paused", state.paused); }
+    if (patientPause) patientPause.textContent = text;
+    const overlay = document.getElementById("pause-overlay");
+    if (overlay) overlay.classList.toggle("hidden", !state.paused);
+    if (state.paused) {
+      stopCamera();
+    } else {
+      try { await startCamera(); } catch (e) { console.warn("Camera restart failed:", e); }
+    }
+  });
+  document.getElementById("pause-overlay")?.addEventListener("click", () => {
+    if (state.paused) unpauseSession();
+  });
+  document.getElementById("pause-overlay")?.addEventListener("keydown", (e) => {
+    if (state.paused && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); unpauseSession(); }
+  });
+  document.getElementById("btn-mute").addEventListener("click", () => {
+    config.auditory_scanning = !config.auditory_scanning;
+    const btn = document.getElementById("btn-mute");
+    btn.textContent = config.auditory_scanning ? "Sound" : "Muted";
+    btn.classList.toggle("muted", !config.auditory_scanning);
+  });
+  document.getElementById("btn-quick-yes-no").addEventListener("click", () => {
+    const ret = state.screen === "face_ready" ? "face_ready" : state.screen;
+    showQuickYesNo(ret);
+  });
+  document.getElementById("btn-dismiss-emergency").addEventListener("click", () => {
+    document.getElementById("screen-emergency").classList.add("hidden");
+    if (state.screen !== "face_ready") goHome();
+  });
+  document.getElementById("btn-settings-main").addEventListener("click", () => {
+    document.getElementById("settings-modal").classList.remove("hidden");
+    document.getElementById("setting-scan-speed").value = config.scan_speed_ms;
+    document.getElementById("setting-blink-ms").value = config.selection_blink_ms;
+    document.getElementById("setting-emergency-ms").value = config.emergency_blink_ms;
+    document.getElementById("setting-auditory").checked = config.auditory_scanning;
+    document.getElementById("setting-volume").value = config.volume * 100;
+  });
+  document.getElementById("btn-settings-close").addEventListener("click", () => {
+    document.getElementById("settings-modal").classList.add("hidden");
+    config.scan_speed_ms = parseInt(document.getElementById("setting-scan-speed").value, 10);
+    config.selection_blink_ms = parseInt(document.getElementById("setting-blink-ms").value, 10);
+    localStorage.setItem("bedsideblink_calibration", JSON.stringify({
+      selection_blink_ms: config.selection_blink_ms,
+      scan_speed_ms: config.scan_speed_ms,
+      calibrationCompleted: state.calibrationCompleted
+    }));
+    config.emergency_blink_ms = parseInt(document.getElementById("setting-emergency-ms").value, 10);
+    config.auditory_scanning = document.getElementById("setting-auditory").checked;
+    config.volume = parseInt(document.getElementById("setting-volume").value, 10) / 100;
+  });
+  document.getElementById("btn-new-session").addEventListener("click", () => { state.session = []; goHome(); });
+  document.getElementById("btn-end-session").addEventListener("click", () => { showScreen("face_ready"); });
+  document.getElementById("btn-new-session-patient")?.addEventListener("click", () => { state.session = []; goHome(); });
+  document.getElementById("btn-end-session-patient")?.addEventListener("click", () => { showScreen("face_ready"); });
+  document.getElementById("btn-calibration-main").addEventListener("click", openCalibration);
+  document.getElementById("btn-customize")?.addEventListener("click", openCustomizeModal);
+  document.getElementById("btn-customize-close")?.addEventListener("click", closeCustomizeModal);
+  document.getElementById("btn-customize-save")?.addEventListener("click", saveCustomize);
+  document.getElementById("customize-modal")?.addEventListener("click", (e) => {
+    if (e.target.id === "customize-modal") closeCustomizeModal();
+  });
+  document.getElementById("btn-calibration-close").addEventListener("click", () => {
+    saveCalibrationState();
+    state.calibrationMode = null;
+    document.getElementById("calibration-modal").classList.add("hidden");
+  });
+  document.getElementById("calibration-scan-speed")?.addEventListener("input", (e) => {
+    const val = parseInt(e.target.value, 10);
+    if (!isNaN(val) && val >= 2000 && val <= 8000) config.scan_speed_ms = val;
+  });
+  document.getElementById("calibration-scan-speed")?.addEventListener("change", (e) => {
+    const val = parseInt(e.target.value, 10);
+    if (!isNaN(val) && val >= 2000 && val <= 8000) config.scan_speed_ms = val;
+  });
+  function closeDailySummaryModal() {
+    document.getElementById("daily-summary-modal").classList.add("hidden");
+  }
+  document.getElementById("btn-daily-summary").addEventListener("click", () => {
+    renderDailySummary();
+    document.getElementById("daily-summary-modal").classList.remove("hidden");
+  });
+  document.getElementById("btn-daily-summary-landing")?.addEventListener("click", () => {
+    renderDailySummary();
+    document.getElementById("daily-summary-modal").classList.remove("hidden");
+  });
+  document.getElementById("btn-daily-summary-home")?.addEventListener("click", () => {
+    renderDailySummary();
+    document.getElementById("daily-summary-modal").classList.remove("hidden");
+  });
+  document.getElementById("btn-home")?.addEventListener("click", () => {
+    if (state.screen === "face_ready" || state.screen === "home") return;
+    goHome();
+  });
+  document.getElementById("btn-home-patient")?.addEventListener("click", () => {
+    state.navStack = [];
+    showScreen("face_ready");
+  });
+  document.getElementById("caregiver-toggle")?.addEventListener("click", toggleCaregiverMode);
+  document.getElementById("btn-pause-patient")?.addEventListener("click", () => {
+    document.getElementById("btn-pause")?.click();
+  });
+  document.getElementById("btn-daily-summary-close").addEventListener("click", closeDailySummaryModal);
+  document.getElementById("daily-summary-modal").addEventListener("click", (e) => {
+    if (e.target.id === "daily-summary-modal") closeDailySummaryModal();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !document.getElementById("daily-summary-modal").classList.contains("hidden")) {
+      closeDailySummaryModal();
+    }
+  });
+
+  let faceSeconds = 0;
+  let totalSeconds = 0;
+  const startWaitSeconds = localStorage.getItem("bedsideblink_calibration") ? 3 : 10;
+  setInterval(() => {
+    if (state.screen === "face_ready") {
+      totalSeconds += 0.5;
+      if (state.faceDetected) {
+        faceSeconds += 0.5;
+        if (faceSeconds >= startWaitSeconds) {
+          document.getElementById("btn-start").disabled = false;
+          faceSeconds = startWaitSeconds;
+          updateFaceReadyBlinkHint();
+        }
+      } else {
+        faceSeconds = 0;
+        if (totalSeconds >= 3) {
+          document.getElementById("btn-start").disabled = false;
+          updateFaceReadyBlinkHint();
+        }
+      }
+    } else {
+      faceSeconds = 0;
+      totalSeconds = 0;
+    }
+  }, 500);
+
+  document.querySelector(".init-status")?.remove();
+  document.querySelector(".camera-container")?.insertAdjacentHTML("beforeend", '<p class="init-status" style="position:absolute;bottom:12px;left:0;right:0;text-align:center;color:#94a3b8;font-size:14px;">Starting camera…</p>');
+  try {
+    await initFaceLandmarker();
+  } catch (e) {
+    document.querySelector(".init-status")?.remove();
+    showInitError("Face model failed: " + e.message + ". Check your connection.");
+    return;
+  }
+  try {
+    await startCamera();
+  } catch (e) {
+    document.querySelector(".init-status")?.remove();
+    const msg = e.name === "NotAllowedError" ? "Camera access denied. Allow camera in your browser." : (e.name === "NotFoundError" ? "No camera found." : e.message);
+    showInitError(msg);
+    return;
+  }
+  document.querySelector(".init-status")?.remove();
+  updateFaceReadyBlinkHint();
+  renderDailySummaryLanding();
+  processFrame();
+
+  setInterval(runCountdownUpdate, 150);
+}
+
+init();

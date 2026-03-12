@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BedsideBlink</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+</head>
+<body>
+  <div id="app">
+    <!-- Persistent top navigation -->
+    <div id="status-strip">
+      <div class="status-left">
+        <span id="status-face-icon" class="status-face-icon hidden" aria-hidden="true"></span>
+        <span id="status-step"></span>
+        <span id="status-last"></span>
+        <span id="status-hint" class="patient-hint"></span>
+      </div>
+      <div class="nav-actions caregiver-only">
+        <button id="btn-home" class="caregiver-btn" title="Back to home">Home</button>
+        <button id="btn-daily-summary" class="caregiver-btn caregiver-btn-primary" title="View daily progress summary">Summary</button>
+        <button id="btn-calibration-main" class="caregiver-btn caregiver-btn-primary" title="Calibrate blink detection">Calibrate</button>
+        <button id="btn-customize" class="caregiver-btn caregiver-btn-primary" title="Customize tiles">Customize</button>
+        <button id="btn-settings-main" class="caregiver-btn caregiver-btn-primary" title="Adjust scan speed, volume, and more">Settings</button>
+        <button id="btn-mute" class="caregiver-btn" title="Toggle voice">Sound</button>
+        <button id="btn-pause" class="caregiver-btn" title="Pause scanning">Pause</button>
+        <button id="btn-quick-yes-no" class="caregiver-btn">Yes/No</button>
+      </div>
+      <button id="btn-pause-patient" class="caregiver-btn patient-pause-only" title="Pause">Pause</button>
+      <button id="btn-home-patient" class="caregiver-btn patient-home-btn" title="Back to home">Back to home</button>
+      <button id="caregiver-toggle" class="caregiver-toggle" title="Switch to caregiver controls">Caregiver</button>
+    </div>
+
+    <!-- Screen 1: Face readiness — Daily Summary on left for caregiver, camera on right -->
+    <div id="screen-face-ready" class="screen screen-split active">
+      <div class="split-left">
+        <div class="daily-summary-landing" id="daily-summary-landing">
+          <h3 class="daily-summary-landing-title">Today's Summary</h3>
+          <div id="daily-summary-landing-content" class="daily-summary-landing-content"></div>
+          <button id="btn-daily-summary-landing" class="caregiver-btn caregiver-btn-primary btn-daily-summary-landing">View full summary</button>
+        </div>
+      </div>
+      <div class="split-right">
+        <div class="face-ready-content">
+          <div class="camera-container">
+            <video id="video" playsinline autoplay muted></video>
+            <div id="face-outline" class="face-outline hidden"></div>
+          </div>
+            <p class="instruction instruction-tight" id="face-status-text">Please stay within the frame</p>
+          <p class="instruction instruction-idle hidden" id="face-idle-text">Ready when you are. Position your face in view to begin.</p>
+          <div class="face-ready-cta">
+            <p id="face-ready-blink-hint" class="instruction instruction-blink">
+              <span class="blink-hint-label">Detecting face…</span>
+              <span class="blink-progress-text" id="face-ready-blink-count"></span>
+            </p>
+            <button id="btn-start" disabled>Begin</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Screen 2: Home menu — options only (no summary; summary only on landing) -->
+    <div id="screen-home" class="screen screen-split split-hide-log">
+      <div class="split-left">
+        <div class="daily-summary-landing" id="daily-summary-home">
+          <h3 class="daily-summary-landing-title">Today's Summary</h3>
+          <div id="daily-summary-home-content" class="daily-summary-landing-content"></div>
+          <button id="btn-daily-summary-home" class="caregiver-btn caregiver-btn-primary btn-daily-summary-landing">View full summary</button>
+        </div>
+      </div>
+      <div class="split-right">
+        <p class="screen-welcome">What do you need?</p>
+        <p class="screen-helper">Long blink to choose. You can go back at any time.</p>
+        <div id="home-items" class="scan-grid"></div>
+      </div>
+    </div>
+
+    <!-- Screen 3: Section — no event log; main actions only (first flow screen) -->
+    <div id="screen-section" class="screen screen-split split-hide-log">
+      <div class="split-left">
+        <div class="comm-history-wrap compact-event-list" id="flow-event-log"></div>
+      </div>
+      <div class="split-right">
+        <h2 id="section-title"></h2>
+        <p class="section-helper">Choose the closest match. You can go back if needed.</p>
+        <div id="section-items" class="scan-grid"></div>
+      </div>
+    </div>
+
+    <!-- Screen 4: Item list — no comm history -->
+    <div id="screen-items" class="screen screen-split split-hide-log">
+      <div class="split-left">
+        <div class="comm-history-wrap compact-event-list" id="flow-event-log-items"></div>
+      </div>
+      <div class="split-right">
+        <h2 id="items-title"></h2>
+        <p class="items-helper">Choose the closest match. You can go back if needed.</p>
+        <div id="items-list" class="scan-grid"></div>
+        <div id="items-pagination"></div>
+      </div>
+    </div>
+
+    <!-- Screen 5: Confirmation — no comm history -->
+    <div id="screen-confirm" class="screen screen-split split-hide-log">
+      <div class="split-left">
+        <div class="comm-history-wrap compact-event-list" id="flow-event-log-confirm"></div>
+      </div>
+      <div class="split-right">
+        <p class="confirm-prompt">We understood this:</p>
+        <p id="confirm-item" class="confirm-item"></p>
+        <p class="confirm-reassurance">You can change it if needed.</p>
+        <div id="confirm-options" class="scan-grid two-items"></div>
+      </div>
+    </div>
+
+    <!-- Screen 6: Anything else? — no comm history -->
+    <div id="screen-anything-else" class="screen screen-split split-hide-log">
+      <div class="split-left">
+        <div class="comm-history-wrap compact-event-list" id="flow-event-log-anything"></div>
+      </div>
+      <div class="split-right">
+        <p class="anything-else-prompt">Choose one:</p>
+        <p id="anything-else-last" class="anything-else-last"></p>
+        <div id="anything-else-options" class="scan-grid two-items"></div>
+      </div>
+    </div>
+
+    <!-- Screen 7: Spelling — no comm history -->
+    <div id="screen-spelling" class="screen screen-split split-hide-log">
+      <div class="split-left">
+        <div class="comm-history-wrap compact-event-list" id="flow-event-log-spelling"></div>
+      </div>
+      <div class="split-right">
+        <div id="word-strip" class="word-strip"></div>
+        <h3 id="spelling-row-label"></h3>
+        <div id="spelling-row-items" class="scan-grid"></div>
+        <p class="spelling-controls-label">Controls row at bottom</p>
+      </div>
+    </div>
+
+    <!-- Screen 8: Quick YES/NO -->
+    <div id="screen-quick-yes-no" class="screen full-split">
+      <div id="quick-no" class="quick-half no-half"></div>
+      <div id="quick-yes" class="quick-half yes-half"></div>
+    </div>
+
+    <!-- Screen 9: Summary — patient waiting (right) + caregiver history (left) -->
+    <div id="screen-summary" class="screen screen-split">
+      <div class="split-left summary-caregiver-panel">
+        <section class="summary-left-inner">
+          <div id="summary-latest-block" class="summary-latest-block">
+            <h3 class="summary-latest-title">Latest request</h3>
+            <p id="summary-latest-time" class="summary-latest-time"></p>
+            <p id="summary-latest-label" class="summary-latest-label"></p>
+          </div>
+          <h2>Request history</h2>
+          <div id="summary-event-log" class="summary-request-cards"></div>
+          <div class="summary-caregiver-buttons">
+            <button id="btn-new-session" class="caregiver-btn">Start new session</button>
+            <button id="btn-end-session" class="caregiver-btn">End session</button>
+          </div>
+        </section>
+      </div>
+      <div class="split-right">
+        <div id="summary-three-blink-prompt" class="three-blink-prompt">
+          <div id="summary-current-block" class="summary-current-block">
+            <p id="summary-you-said-at" class="summary-you-said-at"></p>
+            <label id="summary-mark-done-current" class="summary-mark-done-label"><input type="checkbox" aria-label="Mark as done"> Mark as done</label>
+          </div>
+          <div id="summary-also-waiting-wrap" class="summary-also-waiting-wrap">
+            <h3 class="summary-also-waiting-title">Also waiting</h3>
+            <div id="summary-pending-list" class="summary-pending-list" role="list"></div>
+          </div>
+          <p class="three-blink-title three-blink-title-compact">Blink 3 times to start a new request</p>
+          <p id="summary-blink-count" class="summary-blink-count" aria-live="polite"></p>
+          <div class="summary-patient-caregiver-actions">
+            <button id="btn-new-session-patient" class="caregiver-btn caregiver-btn-primary">Start new session</button>
+            <button id="btn-end-session-patient" class="caregiver-btn">End session</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Emergency overlay -->
+    <div id="screen-emergency" class="screen emergency-overlay hidden">
+      <h1>Patient needs urgent help</h1>
+      <button id="btn-dismiss-emergency" class="caregiver-btn">Dismiss</button>
+    </div>
+
+    <!-- Face lost overlay -->
+    <div id="face-lost-overlay" class="overlay hidden">
+      <p>Please stay in view</p>
+    </div>
+
+  </div>
+
+  <!-- Pause overlay — tap to continue (outside #app for correct z-index) -->
+  <div id="pause-overlay" class="overlay overlay-pause hidden" tabindex="0" role="button" aria-label="Tap to resume session">
+    <div class="pause-message">
+        <p class="pause-title">Paused</p>
+        <p class="pause-hint">Tap to continue</p>
+    </div>
+  </div>
+
+  <!-- Settings modal -->
+  <div id="settings-modal" class="modal hidden">
+    <div class="modal-content">
+      <h2>Settings</h2>
+      <p>Scan speed (ms): <input type="number" id="setting-scan-speed" min="2000" max="8000" step="200"></p>
+      <p>Selection blink (ms): <input type="number" id="setting-blink-ms" min="500" max="1500" step="50"></p>
+      <p>Emergency blink (ms): <input type="number" id="setting-emergency-ms" min="3000" max="8000" step="500"></p>
+      <p>Auditory scanning: <input type="checkbox" id="setting-auditory" checked></p>
+      <p>Volume: <input type="range" id="setting-volume" min="0" max="100" value="80"></p>
+      <button id="btn-settings-close">Close</button>
+    </div>
+  </div>
+
+  <!-- Daily Summary modal (caregiver) -->
+  <div id="daily-summary-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="daily-summary-title">
+    <div class="modal-content modal-content-wide">
+      <div class="modal-header">
+        <h2 id="daily-summary-title">Today's care summary</h2>
+        <button id="btn-daily-summary-close" class="modal-close-btn" aria-label="Close">&times;</button>
+      </div>
+      <p class="modal-subtitle">Request history — for caregiver reference</p>
+      <div id="daily-summary-content"></div>
+    </div>
+  </div>
+
+  <!-- Customize modal -->
+  <div id="customize-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="customize-title">
+    <div class="modal-content modal-content-wide">
+      <div class="modal-header">
+        <h2 id="customize-title">Customize tiles</h2>
+        <button id="btn-customize-close" class="modal-close-btn" aria-label="Close">&times;</button>
+      </div>
+      <div id="customize-breadcrumb" class="customize-breadcrumb"></div>
+      <p id="customize-help" class="customize-help"></p>
+      <ul id="customize-list" class="customize-list"></ul>
+      <div class="customize-add-row">
+        <button type="button" id="btn-customize-add" class="caregiver-btn">+ Add new item</button>
+        <button type="button" id="btn-customize-add-group" class="caregiver-btn">+ Add new group</button>
+      </div>
+      <div class="customize-footer">
+        <button type="button" id="btn-customize-save" class="caregiver-btn caregiver-btn-primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Calibration modal -->
+  <div id="calibration-modal" class="modal hidden">
+    <div class="modal-content">
+      <h2>Calibration</h2>
+      <div class="calibration-tile-setting">
+        <label for="calibration-scan-speed">Time per tile (ms):</label>
+        <input type="number" id="calibration-scan-speed" min="2000" max="8000" step="200" title="How long each option is highlighted before moving to the next">
+      </div>
+      <p id="calibration-step"></p>
+      <button id="btn-calibration-close" class="caregiver-btn">Close (skip)</button>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <script src="supabase-config.js?v=1"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

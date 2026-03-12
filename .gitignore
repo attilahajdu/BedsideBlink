@@ -1,0 +1,26 @@
+# Build
+/build
+/app/build
+*.apk
+*.ap_
+*.aab
+
+# Local config
+local.properties
+web/supabase-config.js
+
+# IDE
+.idea/
+*.iml
+
+# Gradle
+.gradle/
+
+# JDK + Android SDK (portable, in project)
+.jdks/
+.android-sdk/
+gradle-8.9/
+gradle-8.9-bin.zip
+
+# OS
+.DS_Store
