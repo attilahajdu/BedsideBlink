@@ -21,14 +21,24 @@
         <span id="status-hint" class="patient-hint"></span>
       </div>
       <div class="nav-actions caregiver-only">
-        <button id="btn-home" class="caregiver-btn" title="Back to home">Home</button>
-        <button id="btn-daily-summary" class="caregiver-btn caregiver-btn-primary" title="View daily progress summary">Summary</button>
-        <button id="btn-calibration-main" class="caregiver-btn caregiver-btn-primary" title="Calibrate blink detection">Calibrate</button>
-        <button id="btn-customize" class="caregiver-btn caregiver-btn-primary" title="Customize tiles">Customize</button>
-        <button id="btn-settings-main" class="caregiver-btn caregiver-btn-primary" title="Adjust scan speed, volume, and more">Settings</button>
-        <button id="btn-mute" class="caregiver-btn" title="Toggle voice">Sound</button>
-        <button id="btn-pause" class="caregiver-btn" title="Pause scanning">Pause</button>
-        <button id="btn-quick-yes-no" class="caregiver-btn">Yes/No</button>
+        <div class="nav-group nav-group-primary">
+          <button id="btn-home" class="caregiver-btn" title="Back to home">Home</button>
+          <button id="btn-daily-summary" class="caregiver-btn caregiver-btn-primary" title="View daily progress summary">Summary</button>
+          <button id="btn-sitemap" class="caregiver-btn caregiver-btn-primary" title="View full patient options structure">Site map</button>
+        </div>
+        <div class="nav-group nav-group-setup">
+          <button id="btn-setup-toggle" class="caregiver-btn caregiver-btn-setup" title="Calibrate, customize, settings" aria-haspopup="true" aria-expanded="false">Setup <span class="nav-chevron" aria-hidden="true">▾</span></button>
+          <div id="setup-dropdown" class="nav-dropdown hidden" role="menu">
+            <button id="btn-calibration-main" class="caregiver-btn nav-dropdown-item" role="menuitem" title="Calibrate blink detection">Calibrate</button>
+            <button id="btn-customize" class="caregiver-btn nav-dropdown-item" role="menuitem" title="Customize tiles">Customize</button>
+            <button id="btn-settings-main" class="caregiver-btn nav-dropdown-item" role="menuitem" title="Scan speed, volume, voice">Settings</button>
+          </div>
+        </div>
+        <div class="nav-group nav-group-session">
+          <button id="btn-mute" class="caregiver-btn" title="Toggle voice">Sound</button>
+          <button id="btn-pause" class="caregiver-btn" title="Pause scanning">Pause</button>
+          <button id="btn-quick-yes-no" class="caregiver-btn" title="Quick yes or no">Yes/No</button>
+        </div>
       </div>
       <button id="btn-pause-patient" class="caregiver-btn patient-pause-only" title="Pause">Pause</button>
       <button id="btn-home-patient" class="caregiver-btn patient-home-btn" title="Back to home">Back to home</button>
@@ -214,7 +224,10 @@
       <p>Selection blink (ms): <input type="number" id="setting-blink-ms" min="500" max="1500" step="50"></p>
       <p>Emergency blink (ms): <input type="number" id="setting-emergency-ms" min="3000" max="8000" step="500"></p>
       <p>Auditory scanning: <input type="checkbox" id="setting-auditory" checked></p>
-      <p>Volume: <input type="range" id="setting-volume" min="0" max="100" value="80"></p>
+      <p>Voice engine: <select id="setting-voice-engine"><option value="browser">Browser (built-in)</option><option value="piper">Piper (downloadable)</option><option value="responsivevoice">ResponsiveVoice (API key)</option></select></p>
+      <p id="setting-responsivevoice-wrap" class="setting-voice-extra">ResponsiveVoice API key: <input type="password" id="setting-responsivevoice-key" placeholder="Optional"></p>
+      <p id="setting-piper-wrap" class="setting-voice-extra">Piper voice: <select id="setting-piper-voice"></select> <button type="button" id="btn-piper-download" class="btn-piper-download">Download now</button> <span id="setting-piper-status" class="setting-piper-status"></span></p>
+      <p>Volume: <input type="range" id="setting-volume" min="0" max="100" value="80"> <button type="button" id="btn-test-voice" class="caregiver-btn">Test voice (beep + speech)</button></p>
       <button id="btn-settings-close">Close</button>
     </div>
   </div>
@@ -228,6 +241,18 @@
       </div>
       <p class="modal-subtitle">Request history — for caregiver reference</p>
       <div id="daily-summary-content"></div>
+    </div>
+  </div>
+
+  <!-- Site map modal (read-only view of patient options) -->
+  <div id="sitemap-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="sitemap-title">
+    <div class="modal-content modal-content-wide modal-content-tall">
+      <div class="modal-header">
+        <h2 id="sitemap-title">Patient options — full structure</h2>
+        <button id="btn-sitemap-close" class="modal-close-btn" aria-label="Close">&times;</button>
+      </div>
+      <p class="modal-subtitle">Read-only architecture of every option the patient can choose. Primary care branches on the left; utility options on the right.</p>
+      <div id="sitemap-tree" class="arch-canvas-wrap"></div>
     </div>
   </div>
 

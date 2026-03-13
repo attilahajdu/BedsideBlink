@@ -135,8 +135,24 @@ let config = {
   auditory_scanning: true,
   volume: 0.8,
   max_items_per_page: 8,
-  voiceUri: null
+  voiceUri: null,
+  voiceEngine: "browser",
+  piperVoiceId: null,
+  responsiveVoiceKey: ""
 };
+
+let piperTtsModule = null;
+let piperLoadFailed = false;
+let responsiveVoiceReady = false;
+
+const PIPER_VOICES = [
+  { id: "en_US-hfc_female-medium", name: "English (US) Female" },
+  { id: "en_US-lessac-medium", name: "English (US) Lessac" },
+  { id: "en_GB-alba-medium", name: "English (UK) Alba" },
+  { id: "en_US-libritts-high", name: "English (US) LibriTTS" },
+  { id: "en_US-danny-low", name: "English (US) Danny" },
+  { id: "en_GB-cori-medium", name: "English (UK) Cori" }
+];
 
 let content = null;
 let supabaseClient = null;
@@ -291,11 +307,32 @@ async function loadContent() {
       }
     } catch (_) {}
   }
+  const voiceSaved = localStorage.getItem("bedsideblink_voice");
+  if (voiceSaved) {
+    try {
+      const v = JSON.parse(voiceSaved);
+      if (v.voiceEngine) config.voiceEngine = v.voiceEngine;
+      if (v.piperVoiceId != null && v.piperVoiceId !== "") config.piperVoiceId = v.piperVoiceId;
+      else config.piperVoiceId = null;
+      if (v.responsiveVoiceKey != null) config.responsiveVoiceKey = v.responsiveVoiceKey || "";
+    } catch (_) {}
+  }
+}
+
+function saveVoiceConfig() {
+  try {
+    localStorage.setItem("bedsideblink_voice", JSON.stringify({
+      voiceEngine: config.voiceEngine,
+      piperVoiceId: config.piperVoiceId,
+      responsiveVoiceKey: config.responsiveVoiceKey
+    }));
+  } catch (_) {}
 }
 
 function playBeep(freq = 800, duration = 200) {
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (ctx.state === "suspended") ctx.resume();
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.connect(gain);
@@ -306,6 +343,28 @@ function playBeep(freq = 800, duration = 200) {
     osc.start(ctx.currentTime);
     osc.stop(ctx.currentTime + duration / 1000);
   } catch (e) { console.warn("Audio failed", e); }
+}
+
+async function loadPiperTts() {
+  if (piperTtsModule) return piperTtsModule;
+  if (piperLoadFailed) return null;
+  try {
+    const mod = await import("https://esm.sh/@mintplex-labs/piper-tts-web@1.0.4");
+    piperTtsModule = mod.default || mod;
+    return piperTtsModule;
+  } catch (e) {
+    console.warn("Piper TTS load failed:", e);
+    piperLoadFailed = true;
+    return null;
+  }
+}
+
+function isModalOpen() {
+  const modals = ["settings-modal", "calibration-modal", "customize-modal", "daily-summary-modal", "sitemap-modal"];
+  return modals.some(id => {
+    const el = document.getElementById(id);
+    return el && !el.classList.contains("hidden");
+  });
 }
 
 function saveCalibrationState() {
@@ -423,18 +482,67 @@ function pickDefaultVoice() {
   else if (voices.length) config.voiceUri = voices[0].voiceURI;
 }
 
-function speak(text) {
-  if (!config.auditory_scanning) return;
+function speakBrowser(text, noCancel = false) {
+  if (!window.speechSynthesis) return;
   const u = new SpeechSynthesisUtterance(text);
-  u.volume = config.volume;
-  u.rate = 0.72;
-  u.pitch = 0.95;
+  u.volume = Math.max(0.1, config.volume);
+  u.rate = 0.85;
+  u.pitch = 1;
   if (config.voiceUri) {
     const voice = speechSynthesis.getVoices().find(v => v.voiceURI === config.voiceUri);
     if (voice) u.voice = voice;
   }
-  speechSynthesis.cancel();
-  speechSynthesis.speak(u);
+  if (speechSynthesis.paused) speechSynthesis.resume();
+  if (!noCancel) {
+    speechSynthesis.cancel();
+    setTimeout(() => { speechSynthesis.speak(u); }, 100);
+  } else {
+    speechSynthesis.speak(u);
+  }
+}
+
+async function speak(text, forcePlay = false) {
+  if (!config.auditory_scanning && !forcePlay) return;
+  const engine = (config.voiceEngine || "browser").toLowerCase();
+
+  if (engine === "responsivevoice" && config.responsiveVoiceKey) {
+    if (!window.responsiveVoice) {
+      return new Promise((resolve) => {
+        const script = document.createElement("script");
+        script.src = "https://code.responsivevoice.org/1.9.9/responsivevoice.min.js?key=" + encodeURIComponent(config.responsiveVoiceKey);
+        script.onload = () => {
+          window.responsiveVoice.setDefaultVolume(config.volume);
+          window.responsiveVoice.speak(text, "UK English Female", { rate: 0.85, pitch: 1, onend: resolve });
+        };
+        script.onerror = () => { speakBrowser(text, true); resolve(); };
+        document.head.appendChild(script);
+      });
+    }
+    window.responsiveVoice.setDefaultVolume(config.volume);
+    window.responsiveVoice.speak(text, "UK English Female", { rate: 0.85, pitch: 1 });
+    return;
+  }
+
+  if (engine === "piper" && config.piperVoiceId) {
+    const mod = await loadPiperTts();
+    if (mod && typeof mod.predict === "function") {
+      try {
+        const wav = await mod.predict({ text, voiceId: config.piperVoiceId });
+        if (wav && wav instanceof Blob) {
+          const url = URL.createObjectURL(wav);
+          const audio = new Audio(url);
+          audio.volume = Math.max(0.1, config.volume);
+          audio.onended = () => URL.revokeObjectURL(url);
+          await audio.play();
+        }
+        return;
+      } catch (e) {
+        console.warn("Piper speak failed, falling back to browser:", e);
+      }
+    }
+  }
+
+  speakBrowser(text, forcePlay || isModalOpen());
 }
 
 const SCREEN_LABELS = {
@@ -754,7 +862,7 @@ function startScan(items, onSelect, options = {}) {
     state.scanTickDuration = scanDuration;
     const item = items[state.scanIndex];
     const label = typeof item === "string" ? item : (item?.label ?? item);
-    if (config.auditory_scanning && label) speak(label);
+    if (config.auditory_scanning && label && !isModalOpen()) speak(label);
     if (container) {
       container.innerHTML = renderScanItems(items, state.scanIndex, onSelect, colorMap, iconMap, context, showIcons);
       container.querySelectorAll(".scan-item").forEach((el, i) => {
@@ -1111,7 +1219,7 @@ function showQuickYesNo(returnScreen) {
     state.scanTickStart = Date.now();
     state.scanTickDuration = scanDuration;
     both.forEach((el, i) => { el.classList.toggle("active", i === state.scanIndex); addBlinkProgress(el, 0); });
-    if (config.auditory_scanning) speak(opts[state.scanIndex].label);
+    if (config.auditory_scanning && !isModalOpen()) speak(opts[state.scanIndex].label);
     runCountdownUpdate();
     state.scanIndex = (state.scanIndex + 1) % 2;
   }
@@ -1124,6 +1232,146 @@ const SECTION_GROUP_MAX = 6;
 const ITEMS_PER_GROUP_MAX = 6;
 const FIXED_ROOT_IDS = ["spelling", "quick_yes_no"];
 const NAV_TO_BOARD = { urgent_needs: "board_2_urgent", comfort_care: "board_3_comfort" };
+
+const BUILT_IN_ROOT_LABELS = {
+  urgent_needs: "Urgent needs",
+  comfort_care: "Comfort and care",
+  spelling: "Spell a word",
+  quick_yes_no: "Quick yes or no"
+};
+
+/**
+ * Patient-options architecture view (read-only).
+ * Previous equal-width columns flattened hierarchy and gave secondary branches (Spell a word, Yes/No) the same weight as primary care (Urgent needs, Comfort and care). This version: (1) splits into a dominant primary canvas (left/centre) and a narrow secondary strip (right), (2) renders a true recursive tree with connector lines and depth-based weight, (3) supports unlimited nesting from the source data.
+ */
+/** Primary editable care architecture: dominant in layout. */
+const ARCH_PRIMARY_NAV_IDS = ["urgent_needs", "comfort_care"];
+/** Secondary/utility branches: narrower, quieter, far right. */
+const ARCH_SECONDARY_NAV_IDS = ["spelling", "quick_yes_no"];
+
+/** Normalize any node shape to { label, children[] } for recursive rendering. Supports unlimited depth. */
+function normalizeToArchNode(node) {
+  if (!node || node.label === undefined) return { label: "", children: [] };
+  if (node.leaf) return { label: node.label, children: [] };
+  if (Array.isArray(node.items)) {
+    return {
+      label: node.label,
+      children: node.items.map(it => ({ label: typeof it === "string" ? it : (it?.label || ""), children: [] }))
+    };
+  }
+  const children = (node.children || []).map(normalizeToArchNode).filter(n => n.label !== undefined);
+  return { label: node.label, children };
+}
+
+/** Build primary and secondary trees from config. Returns { primary: ArchNode[], secondary: ArchNode[] }. */
+function buildArchTrees() {
+  const cfg = state.config || { boards: {}, navigation_root: { scan_order: [] } };
+  const boards = cfg.boards || {};
+  const navOrder = cfg.navigation_root?.scan_order || ["urgent_needs", "comfort_care", "spelling", "quick_yes_no"];
+  const primary = [];
+  const secondary = [];
+
+  function addBoardNode(navId, list) {
+    const title = BUILT_IN_ROOT_LABELS[navId] || boards[navId]?.label || navId;
+    const boardKey = getBoardKey(navId);
+    const board = boards[boardKey] || content?.boards?.[boardKey];
+
+    if (navId === "spelling" && board?.rows) {
+      const children = board.rows.map(row => {
+        const rowLabel = row.label || row.id || "Row";
+        const items = (row.items || []).map(it => (typeof it === "string" ? it : it?.label || String(it)));
+        return normalizeToArchNode({ label: rowLabel, items });
+      });
+      list.push(normalizeToArchNode({ label: title, children }));
+      return;
+    }
+
+    if (navId === "quick_yes_no") {
+      list.push(normalizeToArchNode({
+        label: title,
+        children: [{ label: "No", children: [] }, { label: "Yes", children: [] }]
+      }));
+      return;
+    }
+
+    if (!board?.groups) {
+      list.push({ label: title, children: [] });
+      return;
+    }
+
+    const boardChildren = board.groups.map(group => {
+      const groupLabel = group.label || group.id || "Group";
+      const itemNodes = (group.items || []).map(item => {
+        const itemLabel = typeof item === "string" ? item : (item?.label || "");
+        if (typeof item === "object" && item && Array.isArray(item.subItems) && item.subItems.length > 0) {
+          const subLabels = item.subItems.map(s => (typeof s === "string" ? s : s?.label || ""));
+          return normalizeToArchNode({ label: itemLabel, items: subLabels });
+        }
+        return { label: itemLabel, children: [] };
+      });
+      return normalizeToArchNode({ label: groupLabel, children: itemNodes });
+    });
+    list.push(normalizeToArchNode({ label: title, children: boardChildren }));
+  }
+
+  ARCH_PRIMARY_NAV_IDS.forEach(id => { if (navOrder.includes(id)) addBoardNode(id, primary); });
+  ARCH_SECONDARY_NAV_IDS.forEach(id => { if (navOrder.includes(id)) addBoardNode(id, secondary); });
+  navOrder.forEach(id => {
+    if (ARCH_PRIMARY_NAV_IDS.includes(id) || ARCH_SECONDARY_NAV_IDS.includes(id)) return;
+    addBoardNode(id, primary);
+  });
+
+  return { primary, secondary };
+}
+
+/** Reusable hierarchy view: one branch (node + connector stalk + children). Renders recursively for unlimited depth. */
+function renderArchBranch(node, depth, zone) {
+  const depthClass = `arch-d${Math.min(depth, 4)}`;
+  const zoneClass = zone === "secondary" ? " arch-secondary" : "";
+  const card = `<div class="arch-node ${depthClass}${zoneClass}" role="treeitem" aria-level="${depth + 1}">${escapeHtml(node.label)}</div>`;
+  if (!node.children || node.children.length === 0) return card;
+
+  const childrenHtml = node.children.map((child, i) => {
+    const isLast = i === node.children.length - 1;
+    const branchHtml = renderArchBranch(child, depth + 1, zone);
+    return `<div class="arch-child" data-last="${isLast}">${branchHtml}</div>`;
+  }).join("");
+
+  return `<div class="arch-branch" role="group" aria-label="${escapeHtml(node.label)}">
+    ${card}
+    <div class="arch-stalk"></div>
+    <div class="arch-children">${childrenHtml}</div>
+  </div>`;
+}
+
+function renderSiteMapTree(containerEl) {
+  if (!containerEl) return;
+  const { primary, secondary } = buildArchTrees();
+  const primaryHtml = primary.length
+    ? primary.map(n => renderArchBranch(n, 0, "primary")).join("")
+    : "";
+  const secondaryHtml = secondary.length
+    ? secondary.map(n => renderArchBranch(n, 0, "secondary")).join("")
+    : "";
+  containerEl.innerHTML = `
+    <div class="arch-canvas">
+      <div class="arch-canvas-primary" role="tree" aria-label="Primary care options">${primaryHtml}</div>
+      <div class="arch-canvas-secondary" role="tree" aria-label="Utility options">${secondaryHtml}</div>
+    </div>`;
+}
+
+function openSiteMapModal() {
+  const modal = document.getElementById("sitemap-modal");
+  const treeEl = document.getElementById("sitemap-tree");
+  if (modal && treeEl) {
+    renderSiteMapTree(treeEl);
+    modal.classList.remove("hidden");
+  }
+}
+
+function closeSiteMapModal() {
+  document.getElementById("sitemap-modal")?.classList.add("hidden");
+}
 
 function getBoardKey(navId) {
   return NAV_TO_BOARD[navId] || navId;
@@ -1923,12 +2171,67 @@ async function init() {
     if (state.screen !== "face_ready") goHome();
   });
   document.getElementById("btn-settings-main").addEventListener("click", () => {
+    closeSetupDropdown();
     document.getElementById("settings-modal").classList.remove("hidden");
     document.getElementById("setting-scan-speed").value = config.scan_speed_ms;
     document.getElementById("setting-blink-ms").value = config.selection_blink_ms;
     document.getElementById("setting-emergency-ms").value = config.emergency_blink_ms;
     document.getElementById("setting-auditory").checked = config.auditory_scanning;
     document.getElementById("setting-volume").value = config.volume * 100;
+    document.getElementById("setting-voice-engine").value = config.voiceEngine || "browser";
+    document.getElementById("setting-responsivevoice-key").value = config.responsiveVoiceKey || "";
+    const piperSelect = document.getElementById("setting-piper-voice");
+    piperSelect.innerHTML = "<option value=''>— Select Piper voice —</option>" +
+      PIPER_VOICES.map(p => `<option value="${p.id}" ${config.piperVoiceId === p.id ? "selected" : ""}>${p.name}</option>`).join("");
+    document.getElementById("setting-piper-status").textContent = piperLoadFailed ? " (Piper load failed)" : "";
+    document.getElementById("setting-responsivevoice-wrap").classList.toggle("hidden", (config.voiceEngine || "browser") !== "responsivevoice");
+    document.getElementById("setting-piper-wrap").classList.toggle("hidden", (config.voiceEngine || "browser") !== "piper");
+  });
+  function applyVoiceSettingsFromForm() {
+    const engineEl = document.getElementById("setting-voice-engine");
+    const piperEl = document.getElementById("setting-piper-voice");
+    const rvKeyEl = document.getElementById("setting-responsivevoice-key");
+    if (engineEl) config.voiceEngine = engineEl.value || "browser";
+    if (piperEl) { const v = piperEl.value; config.piperVoiceId = (v && v.trim()) ? v : null; }
+    if (rvKeyEl) config.responsiveVoiceKey = (rvKeyEl.value || "").trim();
+    saveVoiceConfig();
+  }
+  document.getElementById("setting-voice-engine").addEventListener("change", () => {
+    const engine = document.getElementById("setting-voice-engine").value;
+    document.getElementById("setting-responsivevoice-wrap").classList.toggle("hidden", engine !== "responsivevoice");
+    document.getElementById("setting-piper-wrap").classList.toggle("hidden", engine !== "piper");
+    applyVoiceSettingsFromForm();
+  });
+  document.getElementById("setting-piper-voice").addEventListener("change", applyVoiceSettingsFromForm);
+  document.getElementById("btn-piper-download").addEventListener("click", async () => {
+    const sel = document.getElementById("setting-piper-voice");
+    const voiceId = sel?.value;
+    if (!voiceId) return;
+    const statusEl = document.getElementById("setting-piper-status");
+    statusEl.textContent = " Downloading…";
+    try {
+      const mod = await loadPiperTts();
+      if (piperLoadFailed || !mod) { statusEl.textContent = " Failed to load Piper."; return; }
+      if (typeof mod.download === "function") {
+        await mod.download(voiceId, (p) => {
+          if (p && typeof p.loaded === "number" && typeof p.total === "number" && p.total > 0) {
+            statusEl.textContent = ` ${Math.round((p.loaded / p.total) * 100)}%`;
+          }
+        });
+      }
+      statusEl.textContent = " Ready.";
+      applyVoiceSettingsFromForm();
+    } catch (e) {
+      statusEl.textContent = " Error.";
+    }
+  });
+  document.getElementById("btn-test-voice").addEventListener("click", () => {
+    applyVoiceSettingsFromForm();
+    config.volume = parseInt(document.getElementById("setting-volume").value, 10) / 100;
+    playBeep(600, 150);
+    setTimeout(() => playBeep(800, 150), 200);
+    setTimeout(() => playBeep(1000, 150), 400);
+    setTimeout(() => speak("Testing. One. Two. Three.", true), 700);
   });
   document.getElementById("btn-settings-close").addEventListener("click", () => {
     document.getElementById("settings-modal").classList.add("hidden");
@@ -1942,13 +2245,18 @@ async function init() {
     config.emergency_blink_ms = parseInt(document.getElementById("setting-emergency-ms").value, 10);
     config.auditory_scanning = document.getElementById("setting-auditory").checked;
     config.volume = parseInt(document.getElementById("setting-volume").value, 10) / 100;
+    config.voiceEngine = document.getElementById("setting-voice-engine").value || "browser";
+    config.responsiveVoiceKey = (document.getElementById("setting-responsivevoice-key").value || "").trim();
+    const pv = document.getElementById("setting-piper-voice").value;
+    config.piperVoiceId = (pv && pv.trim()) ? pv : null;
+    saveVoiceConfig();
   });
   document.getElementById("btn-new-session").addEventListener("click", () => { state.session = []; goHome(); });
   document.getElementById("btn-end-session").addEventListener("click", () => { showScreen("face_ready"); });
   document.getElementById("btn-new-session-patient")?.addEventListener("click", () => { state.session = []; goHome(); });
   document.getElementById("btn-end-session-patient")?.addEventListener("click", () => { showScreen("face_ready"); });
-  document.getElementById("btn-calibration-main").addEventListener("click", openCalibration);
-  document.getElementById("btn-customize")?.addEventListener("click", openCustomizeModal);
+  document.getElementById("btn-calibration-main").addEventListener("click", () => { closeSetupDropdown(); openCalibration(); });
+  document.getElementById("btn-customize")?.addEventListener("click", () => { closeSetupDropdown(); openCustomizeModal(); });
   document.getElementById("btn-customize-close")?.addEventListener("click", closeCustomizeModal);
   document.getElementById("btn-customize-save")?.addEventListener("click", saveCustomize);
   document.getElementById("customize-modal")?.addEventListener("click", (e) => {
@@ -1969,6 +2277,32 @@ async function init() {
   });
   function closeDailySummaryModal() {
     document.getElementById("daily-summary-modal").classList.add("hidden");
+  }
+  document.getElementById("btn-sitemap")?.addEventListener("click", openSiteMapModal);
+  document.getElementById("btn-sitemap-close")?.addEventListener("click", closeSiteMapModal);
+  document.getElementById("sitemap-modal")?.addEventListener("click", (e) => {
+    if (e.target.id === "sitemap-modal") closeSiteMapModal();
+  });
+  document.getElementById("btn-setup-toggle")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const dropdown = document.getElementById("setup-dropdown");
+    const expanded = dropdown && !dropdown.classList.contains("hidden");
+    if (dropdown) dropdown.classList.toggle("hidden", expanded);
+    document.getElementById("btn-setup-toggle")?.setAttribute("aria-expanded", expanded ? "false" : "true");
+  });
+  document.addEventListener("click", (e) => {
+    const dropdown = document.getElementById("setup-dropdown");
+    const toggle = document.getElementById("btn-setup-toggle");
+    if (!dropdown || dropdown.classList.contains("hidden")) return;
+    if (toggle?.contains(e.target) || dropdown.contains(e.target)) return;
+    dropdown.classList.add("hidden");
+    toggle?.setAttribute("aria-expanded", "false");
+  });
+  document.getElementById("setup-dropdown")?.addEventListener("click", (e) => e.stopPropagation());
+  function closeSetupDropdown() {
+    const dropdown = document.getElementById("setup-dropdown");
+    if (dropdown) dropdown.classList.add("hidden");
+    document.getElementById("btn-setup-toggle")?.setAttribute("aria-expanded", "false");
   }
   document.getElementById("btn-daily-summary").addEventListener("click", () => {
     renderDailySummary();
@@ -1999,9 +2333,9 @@ async function init() {
     if (e.target.id === "daily-summary-modal") closeDailySummaryModal();
   });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !document.getElementById("daily-summary-modal").classList.contains("hidden")) {
-      closeDailySummaryModal();
-    }
+    if (e.key !== "Escape") return;
+    if (!document.getElementById("daily-summary-modal").classList.contains("hidden")) closeDailySummaryModal();
+    else if (!document.getElementById("sitemap-modal").classList.contains("hidden")) closeSiteMapModal();
   });
 
   let faceSeconds = 0;
