@@ -95,6 +95,27 @@ function getIconName(item, label, context) {
 
 const COMM_HISTORY_KEY = "bedsideblink_comm_history";
 const COMM_HISTORY_MAX = 300;
+/** Local device config (boards, navigation_root). Normal user flow uses this only; cloud is explicit. */
+const LOCAL_CONFIG_KEY = "bedsideblink_local_config";
+const DEVICE_ID_KEY = "bedsideblink_device_id";
+const LAST_CLOUD_BACKUP_KEY = "bedsideblink_last_cloud_backup";
+const STATE_ORIGIN_KEY = "bedsideblink_state_origin";
+const LOCAL_BACKUP_PREFIX = "bedsideblink_local_backup_";
+const SETTINGS_SCHEMA_VERSION = 1;
+const MAX_IMPORT_SIZE_BYTES = 500000;
+
+function getOrCreateDeviceId() {
+  try {
+    let id = localStorage.getItem(DEVICE_ID_KEY);
+    if (!id) {
+      id = "dev_" + crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+      localStorage.setItem(DEVICE_ID_KEY, id);
+    }
+    return id;
+  } catch (_) {
+    return "dev_unknown";
+  }
+}
 
 function loadCommunicationHistory() {
   try {
@@ -191,7 +212,14 @@ let state = {
   summaryBlinkCount: 0,
   summaryLastBlinkTime: 0,
   SUMMARY_BLINK_WINDOW_MS: 4000,
-  caregiverMode: false
+  caregiverMode: false,
+  authUser: null,
+  otpState: "signed_out",
+  otpError: "",
+  otpResendAt: 0,
+  otpEmail: "",
+  lastCloudBackupAt: null,
+  stateOrigin: "local"
 };
 
 const CAREGIVER_MODE_KEY = "bedsideblink_caregiver_mode";
@@ -272,6 +300,438 @@ async function saveConfigToSupabase(cfg) {
   }
 }
 
+const OTP_RESEND_COOLDOWN_MS = 60000;
+
+async function checkAuthSession() {
+  if (!supabaseClient) return;
+  try {
+    const { data: { session } } = await supabaseClient.auth.getSession();
+    if (session?.user) {
+      state.authUser = { id: session.user.id, email: session.user.email || "" };
+      state.otpState = "signed_in";
+      state.otpError = "";
+      const t = localStorage.getItem(LAST_CLOUD_BACKUP_KEY);
+      state.lastCloudBackupAt = t || null;
+      const o = localStorage.getItem(STATE_ORIGIN_KEY);
+      state.stateOrigin = o || "local";
+    } else {
+      state.authUser = null;
+      state.otpState = "signed_out";
+    }
+  } catch (_) {
+    state.authUser = null;
+    state.otpState = "signed_out";
+  }
+  renderAccountSection();
+}
+
+function renderAccountSection() {
+  const wrap = document.getElementById("account-section-wrap");
+  if (!wrap) return;
+  const signedIn = !!state.authUser;
+  const email = (state.otpEmail || state.authUser?.email || "").trim();
+  if (signedIn) {
+    wrap.innerHTML = `
+      <div class="account-section">
+        <h3 class="account-heading">Account</h3>
+        <p class="account-email">Signed in as <strong>${escapeHtml(state.authUser.email || "")}</strong></p>
+        <p class="account-state-origin">Current settings: <span class="account-origin-badge">${escapeHtml(state.stateOrigin.replace(/_/g, " "))}</span></p>
+        ${state.lastCloudBackupAt ? `<p class="account-last-backup">Last cloud backup: ${escapeHtml(new Date(state.lastCloudBackupAt).toLocaleString())}</p>` : ""}
+        <div class="account-actions">
+          <button type="button" id="btn-save-to-cloud" class="caregiver-btn caregiver-btn-primary">Save to cloud</button>
+          <button type="button" id="btn-load-from-cloud" class="caregiver-btn">Load from cloud</button>
+          <button type="button" id="btn-change-email" class="caregiver-btn">Change email</button>
+          <button type="button" id="btn-recovery-code" class="caregiver-btn">Recovery code</button>
+          <button type="button" id="btn-restore-previous" class="caregiver-btn">Restore previous</button>
+          <button type="button" id="btn-sign-out" class="caregiver-btn">Sign out</button>
+        </div>
+      </div>`;
+    wrap.querySelector("#btn-save-to-cloud")?.addEventListener("click", () => saveToCloud());
+    wrap.querySelector("#btn-load-from-cloud")?.addEventListener("click", () => loadFromCloudConfirm());
+    wrap.querySelector("#btn-change-email")?.addEventListener("click", () => showChangeEmail());
+    wrap.querySelector("#btn-recovery-code")?.addEventListener("click", () => showRecoveryCode());
+    wrap.querySelector("#btn-restore-previous")?.addEventListener("click", () => {
+      if (restoreLocalBackup()) { renderAccountSection(); alert("Previous settings restored."); } else { alert("No backup to restore."); }
+    });
+    wrap.querySelector("#btn-sign-out")?.addEventListener("click", () => signOut());
+    const exportBtn = document.createElement("button");
+    exportBtn.type = "button";
+    exportBtn.className = "caregiver-btn";
+    exportBtn.textContent = "Export settings";
+    exportBtn.addEventListener("click", () => exportSettings());
+    wrap.querySelector(".account-actions")?.appendChild(exportBtn);
+    const importBtn = document.createElement("button");
+    importBtn.type = "button";
+    importBtn.className = "caregiver-btn";
+    importBtn.textContent = "Import from file";
+    importBtn.addEventListener("click", () => importSettings());
+    wrap.querySelector(".account-actions")?.appendChild(importBtn);
+    return;
+  }
+  if (state.otpState === "sending_code" || state.otpState === "verifying") {
+    wrap.innerHTML = `
+      <div class="account-section">
+        <h3 class="account-heading">Account</h3>
+        <p class="account-status">${state.otpState === "sending_code" ? "Sending code…" : "Verifying…"}</p>
+      </div>`;
+    return;
+  }
+  if (state.otpState === "code_sent") {
+    const resendDisabled = Date.now() < state.otpResendAt;
+    const resendSec = resendDisabled ? Math.ceil((state.otpResendAt - Date.now()) / 1000) : 0;
+    wrap.innerHTML = `
+      <div class="account-section">
+        <h3 class="account-heading">Account</h3>
+        <p class="account-email-sent">Enter the code we sent to <strong>${escapeHtml(email)}</strong></p>
+        <input type="text" id="account-otp-code" class="account-otp-input" placeholder="6-digit code" maxlength="6" autocomplete="one-time-code" inputmode="numeric" pattern="[0-9]*">
+        <p id="account-otp-error" class="account-error ${state.otpError ? "" : "hidden"}">${escapeHtml(state.otpError)}</p>
+        <div class="account-actions">
+          <button type="button" id="btn-verify-otp" class="caregiver-btn caregiver-btn-primary">Verify</button>
+          <button type="button" id="btn-resend-otp" class="caregiver-btn" ${resendDisabled ? "disabled" : ""}>${resendDisabled ? `Resend in ${resendSec}s` : "Resend code"}</button>
+          <button type="button" id="btn-otp-back" class="caregiver-btn">Back</button>
+        </div>
+      </div>`;
+    wrap.querySelector("#btn-verify-otp")?.addEventListener("click", () => verifyOtpSubmit());
+    wrap.querySelector("#btn-resend-otp")?.addEventListener("click", () => sendOtp(email));
+    wrap.querySelector("#btn-otp-back")?.addEventListener("click", () => { state.otpState = "signed_out"; state.otpError = ""; renderAccountSection(); });
+    wrap.querySelector("#account-otp-code")?.addEventListener("keydown", (e) => { if (e.key === "Enter") verifyOtpSubmit(); });
+    return;
+  }
+  wrap.innerHTML = `
+    <div class="account-section">
+      <h3 class="account-heading">Account</h3>
+      <p class="account-hint">Sign in to save or load settings from the cloud. Your local settings stay on this device.</p>
+      <p id="account-otp-error" class="account-error ${state.otpError ? "" : "hidden"}">${escapeHtml(state.otpError)}</p>
+      <input type="email" id="account-email" class="account-email-input" placeholder="Your email" value="${escapeHtml(email)}">
+      <button type="button" id="btn-send-otp" class="caregiver-btn caregiver-btn-primary">Send one-time code</button>
+      <div class="account-actions account-actions-export-import">
+        <button type="button" id="btn-export-settings" class="caregiver-btn">Export settings</button>
+        <button type="button" id="btn-import-settings" class="caregiver-btn">Import from file</button>
+      </div>
+    </div>`;
+  wrap.querySelector("#btn-export-settings")?.addEventListener("click", () => exportSettings());
+  wrap.querySelector("#btn-import-settings")?.addEventListener("click", () => importSettings());
+  wrap.querySelector("#btn-send-otp")?.addEventListener("click", () => {
+    const input = wrap.querySelector("#account-email");
+    const em = (input?.value || "").trim();
+    if (!em) { state.otpError = "Enter your email."; renderAccountSection(); return; }
+    sendOtp(em);
+  });
+}
+
+async function sendOtp(email) {
+  if (!supabaseClient) { state.otpError = "Not connected."; renderAccountSection(); return; }
+  state.otpState = "sending_code";
+  state.otpError = "";
+  renderAccountSection();
+  try {
+    const { error } = await supabaseClient.auth.signInWithOtp({
+      email: email.trim(),
+      options: { shouldCreateUser: true }
+    });
+    if (error) throw error;
+    state.otpState = "code_sent";
+    state.otpEmail = email.trim();
+    state.otpResendAt = Date.now() + OTP_RESEND_COOLDOWN_MS;
+  } catch (e) {
+    state.otpState = "signed_out";
+    state.otpError = e?.message || "Failed to send code.";
+  }
+  renderAccountSection();
+}
+
+async function verifyOtpSubmit() {
+  const codeEl = document.getElementById("account-otp-code");
+  const code = (codeEl?.value || "").trim().replace(/\s/g, "");
+  if (!code) { state.otpError = "Enter the code from your email."; renderAccountSection(); return; }
+  if (!supabaseClient) { state.otpError = "Not connected."; renderAccountSection(); return; }
+  state.otpState = "verifying";
+  state.otpError = "";
+  renderAccountSection();
+  try {
+    const { data, error } = await supabaseClient.auth.verifyOtp({
+      email: state.otpEmail,
+      token: code,
+      type: "email"
+    });
+    if (error) throw error;
+    if (data?.user) {
+      state.authUser = { id: data.user.id, email: data.user.email || state.otpEmail };
+      state.otpState = "signed_in";
+      state.otpError = "";
+      state.otpEmail = "";
+    } else {
+      state.otpState = "code_sent";
+      state.otpError = "Verification failed.";
+    }
+  } catch (e) {
+    state.otpState = "code_sent";
+    state.otpError = e?.message || "Invalid or expired code. Request a new code.";
+  }
+  renderAccountSection();
+}
+
+async function signOut() {
+  if (!supabaseClient) return;
+  try {
+    await supabaseClient.auth.signOut();
+  } catch (_) {}
+  state.authUser = null;
+  state.otpState = "signed_out";
+  state.otpError = "";
+  state.otpEmail = "";
+  renderAccountSection();
+}
+
+function showChangeEmail() {
+  const newEmail = prompt("Enter new email address:");
+  if (!newEmail?.trim()) return;
+  supabaseClient.auth.updateUser({ email: newEmail.trim() }).then(({ data, error }) => {
+    if (error) { alert(error.message); return; }
+    if (data?.user) state.authUser = { id: data.user.id, email: data.user.email || newEmail.trim() };
+    renderAccountSection();
+  });
+}
+
+function showRecoveryCode() {
+  alert("Recovery code setup will be available after the first cloud backup. Save your settings to the cloud, then return here. For now, use Export to create a backup file.");
+}
+
+function buildSettingsPayload(forExport) {
+  const calibrationRaw = localStorage.getItem("bedsideblink_calibration");
+  let calibration = {};
+  try {
+    if (calibrationRaw) calibration = JSON.parse(calibrationRaw);
+  } catch (_) {}
+  const voiceRaw = localStorage.getItem("bedsideblink_voice");
+  let voice = {};
+  try {
+    if (voiceRaw) voice = JSON.parse(voiceRaw);
+  } catch (_) {}
+  const payload = {
+    schema_version: SETTINGS_SCHEMA_VERSION,
+    updated_at: new Date().toISOString(),
+    device_id: getOrCreateDeviceId(),
+    settings: {
+      boards: state.config?.boards ?? {},
+      navigation_root: state.config?.navigation_root ?? { scan_order: ["urgent_needs", "comfort_care", "spelling", "quick_yes_no"] },
+      calibration: {
+        scan_speed_ms: calibration.scan_speed_ms ?? config.scan_speed_ms,
+        selection_blink_ms: calibration.selection_blink_ms ?? config.selection_blink_ms,
+        calibrationCompleted: !!calibration.calibrationCompleted
+      },
+      voice: {
+        voiceEngine: voice.voiceEngine ?? config.voiceEngine,
+        piperVoiceId: voice.piperVoiceId ?? config.piperVoiceId,
+        responsiveVoiceKey: voice.responsiveVoiceKey ?? config.responsiveVoiceKey
+      }
+    }
+  };
+  if (forExport) payload.exported_at = new Date().toISOString();
+  return payload;
+}
+
+function validateSettingsPayload(obj) {
+  if (!obj || typeof obj !== "object") return { ok: false, error: "Invalid payload." };
+  const v = obj.schema_version;
+  if (v === undefined || v === null) return { ok: false, error: "Missing schema_version." };
+  if (v !== 1 && v !== "1") return { ok: false, error: "Unsupported schema_version." };
+  const s = obj.settings;
+  if (!s || typeof s !== "object") return { ok: false, error: "Missing settings." };
+  if (typeof s.boards !== "object" || s.boards === null) return { ok: false, error: "Invalid settings.boards." };
+  if (typeof s.navigation_root !== "object" || s.navigation_root === null) return { ok: false, error: "Invalid settings.navigation_root." };
+  return { ok: true };
+}
+
+function applySettingsPayload(payload) {
+  const s = payload.settings;
+  if (!s) return;
+  if (s.boards) state.config = { ...state.config, boards: s.boards };
+  if (s.navigation_root) state.config = { ...state.config, navigation_root: s.navigation_root };
+  try {
+    if (s.calibration) {
+      const cal = s.calibration;
+      if (typeof cal.scan_speed_ms === "number") config.scan_speed_ms = Math.min(8000, Math.max(2000, cal.scan_speed_ms));
+      if (typeof cal.selection_blink_ms === "number") config.selection_blink_ms = Math.min(1500, Math.max(500, cal.selection_blink_ms));
+      if (typeof cal.calibrationCompleted === "boolean") state.calibrationCompleted = cal.calibrationCompleted;
+      localStorage.setItem("bedsideblink_calibration", JSON.stringify({
+        scan_speed_ms: config.scan_speed_ms,
+        selection_blink_ms: config.selection_blink_ms,
+        calibrationCompleted: state.calibrationCompleted
+      }));
+    }
+    if (s.voice) {
+      const v = s.voice;
+      if (v.voiceEngine != null) config.voiceEngine = v.voiceEngine;
+      if (v.piperVoiceId != null) config.piperVoiceId = v.piperVoiceId;
+      if (v.responsiveVoiceKey != null) config.responsiveVoiceKey = v.responsiveVoiceKey;
+      saveVoiceConfig();
+    }
+    const toSave = { boards: state.config.boards, navigation_root: state.config.navigation_root };
+    localStorage.setItem(LOCAL_CONFIG_KEY, JSON.stringify(toSave));
+  } catch (e) {
+    console.warn("Apply settings failed:", e.message);
+  }
+}
+
+function createLocalBackup() {
+  try {
+    const payload = buildSettingsPayload(false);
+    const key = LOCAL_BACKUP_PREFIX + Date.now();
+    localStorage.setItem(key, JSON.stringify(payload));
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k?.startsWith(LOCAL_BACKUP_PREFIX)) keys.push(k);
+    }
+    keys.sort();
+    while (keys.length > 5) {
+      localStorage.removeItem(keys.shift());
+    }
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function restoreLocalBackup() {
+  const keys = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k?.startsWith(LOCAL_BACKUP_PREFIX)) keys.push(k);
+  }
+  if (keys.length === 0) return false;
+  keys.sort().reverse();
+  const raw = localStorage.getItem(keys[0]);
+  if (!raw) return false;
+  try {
+    const payload = JSON.parse(raw);
+    const result = validateSettingsPayload(payload);
+    if (!result.ok) return false;
+    applySettingsPayload(payload);
+    state.stateOrigin = "local";
+    try { localStorage.setItem(STATE_ORIGIN_KEY, "local"); } catch (_) {}
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+async function saveToCloud() {
+  if (!supabaseClient || !state.authUser) return;
+  const uid = state.authUser.id;
+  const payload = buildSettingsPayload(false);
+  const row = {
+    user_id: uid,
+    settings: payload.settings,
+    schema_version: SETTINGS_SCHEMA_VERSION,
+    updated_at: new Date().toISOString()
+  };
+  try {
+    const { error } = await supabaseClient.from("user_settings").upsert(row, { onConflict: "user_id" });
+    if (error) throw error;
+    const now = new Date().toISOString();
+    state.lastCloudBackupAt = now;
+    try { localStorage.setItem(LAST_CLOUD_BACKUP_KEY, now); } catch (_) {}
+    renderAccountSection();
+    alert("Settings saved to the cloud.");
+  } catch (e) {
+    console.warn("Save to cloud failed:", e.message);
+    alert("Could not save to cloud: " + (e?.message || "unknown error"));
+  }
+}
+
+function loadFromCloudConfirm() {
+  if (!supabaseClient || !state.authUser) return;
+  (async () => {
+    try {
+      const { data, error } = await supabaseClient.from("user_settings").select("settings, schema_version, updated_at").maybeSingle();
+      if (error) throw error;
+      if (!data) {
+        alert("No cloud backup found. Save to cloud first.");
+        return;
+      }
+      const payload = { schema_version: data.schema_version, updated_at: data.updated_at, device_id: "", settings: data.settings };
+      const result = validateSettingsPayload(payload);
+      if (!result.ok) {
+        alert("Cloud data is invalid: " + result.error);
+        return;
+      }
+      const msg = `Load backup from ${new Date(data.updated_at).toLocaleString()}?\n\nThis will replace your current local settings. A backup of your current settings will be created first.`;
+      if (!confirm(msg)) return;
+      if (!createLocalBackup()) {
+        alert("Could not create local backup. Aborting.");
+        return;
+      }
+      applySettingsPayload(payload);
+      state.stateOrigin = "cloud_backed";
+      try { localStorage.setItem(STATE_ORIGIN_KEY, "cloud_backed"); } catch (_) {}
+      state.lastCloudBackupAt = data.updated_at;
+      try { localStorage.setItem(LAST_CLOUD_BACKUP_KEY, data.updated_at); } catch (_) {}
+      renderAccountSection();
+      alert("Settings loaded from cloud. You can use \"Restore previous\" in Account to undo.");
+    } catch (e) {
+      console.warn("Load from cloud failed:", e.message);
+      alert("Could not load from cloud: " + (e?.message || "unknown error"));
+    }
+  })();
+}
+
+function exportSettings() {
+  const payload = buildSettingsPayload(true);
+  const json = JSON.stringify(payload, null, 2);
+  const blob = new Blob([json], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "bedsideblink-settings.json";
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function importSettings() {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = "application/json,.json";
+  input.onchange = () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    if (file.size > MAX_IMPORT_SIZE_BYTES) {
+      alert("File is too large. Maximum size is " + (MAX_IMPORT_SIZE_BYTES / 1000) + " KB.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      let payload;
+      try {
+        payload = JSON.parse(reader.result);
+      } catch (_) {
+        alert("Invalid JSON file.");
+        return;
+      }
+      const result = validateSettingsPayload(payload);
+      if (!result.ok) {
+        alert("Invalid settings file: " + result.error);
+        return;
+      }
+      const updatedAt = payload.updated_at || payload.exported_at || "unknown";
+      const msg = `Import settings from ${updatedAt}?\n\nThis will replace your current local settings. A backup will be created first.`;
+      if (!confirm(msg)) return;
+      if (!createLocalBackup()) {
+        alert("Could not create backup. Aborting.");
+        return;
+      }
+      applySettingsPayload(payload);
+      state.stateOrigin = "imported";
+      try { localStorage.setItem(STATE_ORIGIN_KEY, "imported"); } catch (_) {}
+      renderAccountSection();
+      alert("Settings imported.");
+    };
+    reader.readAsText(file);
+  };
+  input.click();
+}
+
 async function loadContent() {
   try {
     const r = await fetch("content.json");
@@ -285,13 +745,21 @@ async function loadContent() {
     content = { boards: {}, navigation_root: { scan_order: ["urgent_needs", "comfort_care", "spelling", "quick_yes_no"] } };
   }
   initSupabase();
-  const supabaseConfig = await loadConfigFromSupabase();
   const baseBoards = content?.boards || {};
   const baseNav = content?.navigation_root || { scan_order: ["urgent_needs", "comfort_care", "spelling", "quick_yes_no"] };
+  let localConfig = null;
+  try {
+    const raw = localStorage.getItem(LOCAL_CONFIG_KEY);
+    if (raw) localConfig = JSON.parse(raw);
+  } catch (_) {}
   state.config = {
-    boards: { ...baseBoards, ...(supabaseConfig?.boards || {}) },
-    navigation_root: { ...baseNav, ...(supabaseConfig?.navigation_root || {}) }
+    boards: { ...baseBoards, ...(localConfig?.boards || {}) },
+    navigation_root: { ...baseNav, ...(localConfig?.navigation_root || {}) }
   };
+  try {
+    const o = localStorage.getItem(STATE_ORIGIN_KEY);
+    if (o) state.stateOrigin = o;
+  } catch (_) {}
   const saved = localStorage.getItem("bedsideblink_calibration");
   if (saved) {
     try {
@@ -1388,14 +1856,14 @@ function closeCustomizeModal() {
   document.getElementById("customize-modal").classList.add("hidden");
 }
 
-function showCustomizeSavedHint() {
+function showCustomizeSavedHint(message) {
   const footer = document.querySelector("#customize-modal .customize-footer");
   if (!footer) return;
   const existing = footer.querySelector(".customize-saved-hint");
   if (existing) existing.remove();
   const hint = document.createElement("span");
   hint.className = "customize-saved-hint";
-  hint.textContent = "Saved";
+  hint.textContent = message || "Saved on this device.";
   hint.style.cssText = "margin-left:14px;color:var(--success);font-size:15px;font-weight:500;";
   footer.appendChild(hint);
   setTimeout(() => hint.remove(), 2000);
@@ -1759,16 +2227,16 @@ function customizeAddParentItem(path, draft, boards, nav) {
 async function saveCustomize() {
   const cfg = state.customizeDraft;
   if (!cfg) return;
-  if (!supabaseClient) initSupabase();
   const toSave = { boards: cfg.boards, navigation_root: cfg.navigation_root };
-  const ok = await saveConfigToSupabase(toSave);
-  if (ok) {
-    state.config = { ...state.config, ...toSave };
-    showCustomizeSavedHint();
-  } else {
-    const err = window.__lastSupabaseError || "unknown";
-    alert("Could not save. " + (err.includes("apikey") || err.includes("invalid") ? "Try the Legacy anon key (Project Settings → API Keys → Legacy tab)." : "Check console for details."));
+  try {
+    localStorage.setItem(LOCAL_CONFIG_KEY, JSON.stringify(toSave));
+  } catch (e) {
+    console.warn("Local save failed:", e.message);
+    alert("Could not save on this device. Check storage.");
+    return;
   }
+  state.config = { ...state.config, ...toSave };
+  showCustomizeSavedHint("Saved on this device.");
 }
 
 function updateSummaryPatientView() {
@@ -2130,6 +2598,10 @@ async function init() {
     return;
   }
   document.querySelector(".init-status")?.remove();
+  checkAuthSession();
+  if (supabaseClient?.auth?.onAuthStateChange) {
+    supabaseClient.auth.onAuthStateChange(() => checkAuthSession());
+  }
   document.getElementById("btn-start").addEventListener("click", () => {
     state.session = [];
     showScreen("home");
@@ -2173,6 +2645,7 @@ async function init() {
   document.getElementById("btn-settings-main").addEventListener("click", () => {
     closeSetupDropdown();
     document.getElementById("settings-modal").classList.remove("hidden");
+    renderAccountSection();
     document.getElementById("setting-scan-speed").value = config.scan_speed_ms;
     document.getElementById("setting-blink-ms").value = config.selection_blink_ms;
     document.getElementById("setting-emergency-ms").value = config.emergency_blink_ms;

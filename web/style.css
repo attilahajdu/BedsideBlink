@@ -952,6 +952,75 @@ body.patient-mode #screen-summary.active { grid-template-columns: 1fr; }
   line-height: 1.5;
 }
 
+/* Account / cloud backup section (Settings modal) */
+.account-section-wrap {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border-surface);
+}
+.account-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.account-heading {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0 0 4px 0;
+}
+.account-hint,
+.account-email,
+.account-email-sent,
+.account-state-origin,
+.account-last-backup {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin: 0;
+}
+.account-origin-badge {
+  text-transform: capitalize;
+}
+.account-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+.account-actions .caregiver-btn {
+  margin: 0;
+}
+.account-email-input,
+.account-otp-input {
+  width: 100%;
+  max-width: 280px;
+  padding: 10px 12px;
+  font-size: 14px;
+  font-family: var(--font-sans);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-surface);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+}
+.account-email-input:focus,
+.account-otp-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.account-error {
+  font-size: 13px;
+  color: var(--danger);
+  margin: 0;
+}
+.account-error.hidden {
+  display: none;
+}
+.account-status {
+  font-size: 14px;
+  color: var(--text-muted);
+  margin: 0;
+}
+
 /* ===== Patient options — architecture / taxonomy view ===== */
 .arch-canvas-wrap {
   margin-top: 4px;
