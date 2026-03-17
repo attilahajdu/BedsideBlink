@@ -69,7 +69,7 @@ function getIconName(item, label, context) {
   if (id === "comfort") return LUCIDE_ICONS.comfort;
   if (id === "spelling") return LUCIDE_ICONS.spelling;
   if (id === "quick") return LUCIDE_ICONS.quick;
-  if (label === "Go back" || l === "go back") return LUCIDE_ICONS.back;
+  if (label === BACK_ONE_LEVEL_LABEL || label === BACK_ONE_LEVEL_SPELLING || l === "back one level") return LUCIDE_ICONS.back;
   if (label === "PREV PAGE" || l === "prev page") return LUCIDE_ICONS.prev;
   if (label === "NEXT PAGE" || l === "next page") return LUCIDE_ICONS.next;
   if (label === "Yes, that's right" || label === "YES" || label?.startsWith("Yes")) return LUCIDE_ICONS.yes;
@@ -162,6 +162,22 @@ let config = {
   responsiveVoiceKey: ""
 };
 
+function getScanSpeedLabel(ms) {
+  if (ms <= 3333) return "Fast";
+  if (ms <= 5666) return "Medium";
+  return "Slow";
+}
+function getSelectionBlinkLabel(ms) {
+  if (ms <= 833) return "Easier";
+  if (ms <= 1166) return "Medium";
+  return "Quick";
+}
+function getEmergencyBlinkLabel(ms) {
+  if (ms <= 4333) return "Shorter hold";
+  if (ms <= 6333) return "Medium";
+  return "Long hold";
+}
+
 let piperTtsModule = null;
 let piperLoadFailed = false;
 let responsiveVoiceReady = false;
@@ -223,14 +239,57 @@ let state = {
 };
 
 const CAREGIVER_MODE_KEY = "bedsideblink_caregiver_mode";
+const ONBOARDING_SEEN_KEY = "bedsideblink_onboarding_seen";
+
+function closeCaregiverPanel() {
+  document.body.classList.remove("nav-panel-open");
+  const panel = document.getElementById("caregiver-nav-panel");
+  if (panel) {
+    panel.classList.remove("panel-open");
+    panel.setAttribute("aria-hidden", "true");
+  }
+  const menuBtn = document.getElementById("btn-caregiver-menu");
+  if (menuBtn) menuBtn.setAttribute("aria-expanded", "false");
+}
+
+function openCaregiverPanel() {
+  document.body.classList.add("nav-panel-open");
+  const panel = document.getElementById("caregiver-nav-panel");
+  if (panel) {
+    panel.classList.add("panel-open");
+    panel.setAttribute("aria-hidden", "false");
+  }
+  const menuBtn = document.getElementById("btn-caregiver-menu");
+  if (menuBtn) menuBtn.setAttribute("aria-expanded", "true");
+}
+
+function toggleCaregiverPanel() {
+  const panel = document.getElementById("caregiver-nav-panel");
+  const isOpen = panel && panel.classList.contains("panel-open");
+  if (isOpen) closeCaregiverPanel();
+  else openCaregiverPanel();
+}
 
 function setCaregiverMode(on) {
+  const wasCaregiver = state.caregiverMode;
   state.caregiverMode = !!on;
   try { localStorage.setItem(CAREGIVER_MODE_KEY, state.caregiverMode ? "1" : "0"); } catch (_) {}
   document.body.classList.toggle("patient-mode", !state.caregiverMode);
   const btn = document.getElementById("caregiver-toggle");
   if (btn) btn.textContent = state.caregiverMode ? "Patient view" : "Caregiver";
+  const panelBtn = document.getElementById("caregiver-toggle-panel");
+  if (panelBtn) panelBtn.textContent = state.caregiverMode ? "Patient view" : "Caregiver";
+  if (!state.caregiverMode) closeCaregiverPanel();
+  else openCaregiverPanel();
   updateStatusHint();
+  if (state.caregiverMode && !wasCaregiver) {
+    const toast = document.getElementById("global-toast");
+    if (toast) {
+      toast.textContent = "Caregiver mode — use the menu on the right for Summary, Setup, and more.";
+      toast.classList.remove("hidden");
+      setTimeout(() => toast.classList.add("hidden"), 3000);
+    }
+  }
 }
 
 function toggleCaregiverMode() {
@@ -402,8 +461,10 @@ function renderAccountSection() {
       <h3 class="account-heading">Account</h3>
       <p class="account-hint">Sign in to save or load settings from the cloud. Your local settings stay on this device.</p>
       <p id="account-otp-error" class="account-error ${state.otpError ? "" : "hidden"}">${escapeHtml(state.otpError)}</p>
-      <input type="email" id="account-email" class="account-email-input" placeholder="Your email" value="${escapeHtml(email)}">
-      <button type="button" id="btn-send-otp" class="caregiver-btn caregiver-btn-primary">Send one-time code</button>
+      <div class="account-email-row">
+        <input type="email" id="account-email" class="account-email-input" placeholder="Your email" value="${escapeHtml(email)}">
+        <button type="button" id="btn-send-otp" class="caregiver-btn caregiver-btn-primary account-btn-send-otp">Send one-time code</button>
+      </div>
       <div class="account-actions account-actions-export-import">
         <button type="button" id="btn-export-settings" class="caregiver-btn">Export settings</button>
         <button type="button" id="btn-import-settings" class="caregiver-btn">Import from file</button>
@@ -522,8 +583,8 @@ function buildSettingsPayload(forExport) {
       },
       voice: {
         voiceEngine: voice.voiceEngine ?? config.voiceEngine,
-        piperVoiceId: voice.piperVoiceId ?? config.piperVoiceId,
-        responsiveVoiceKey: voice.responsiveVoiceKey ?? config.responsiveVoiceKey
+        piperVoiceId: voice.piperVoiceId ?? config.piperVoiceId
+        // responsiveVoiceKey omitted: API key stays local only, never in cloud or export
       }
     }
   };
@@ -564,7 +625,7 @@ function applySettingsPayload(payload) {
       const v = s.voice;
       if (v.voiceEngine != null) config.voiceEngine = v.voiceEngine;
       if (v.piperVoiceId != null) config.piperVoiceId = v.piperVoiceId;
-      if (v.responsiveVoiceKey != null) config.responsiveVoiceKey = v.responsiveVoiceKey;
+      // responsiveVoiceKey never applied from payload: API key stays local only
       saveVoiceConfig();
     }
     const toSave = { boards: state.config.boards, navigation_root: state.config.navigation_root };
@@ -619,6 +680,7 @@ function restoreLocalBackup() {
 
 async function saveToCloud() {
   if (!supabaseClient || !state.authUser) return;
+  // uid is from Supabase session only; RLS WITH CHECK (auth.uid() = user_id) rejects any mismatch
   const uid = state.authUser.id;
   const payload = buildSettingsPayload(false);
   const row = {
@@ -848,11 +910,24 @@ function saveCalibrationState() {
   }));
 }
 
+function updateCalibrationSliderLabel() {
+  const el = document.getElementById("calibration-scan-speed");
+  const labelEl = document.getElementById("calibration-scan-speed-label");
+  const msEl = document.getElementById("calibration-scan-speed-ms");
+  if (!el || !labelEl || !msEl) return;
+  const ms = parseInt(el.value, 10) || config.scan_speed_ms;
+  labelEl.textContent = getScanSpeedLabel(ms);
+  msEl.textContent = String(ms);
+}
+
 function openCalibration() {
   state.calibrationMode = "normal_blinks";
   state.calibrationData = { normalBlinks: [], deliberateBlinks: [] };
   const scanInput = document.getElementById("calibration-scan-speed");
   if (scanInput) scanInput.value = config.scan_speed_ms;
+  updateCalibrationSliderLabel();
+  document.getElementById("calibration-success-wrap").classList.add("hidden");
+  document.getElementById("calibration-actions").classList.remove("hidden");
   document.getElementById("calibration-modal").classList.remove("hidden");
   updateCalibrationStep();
 }
@@ -892,11 +967,13 @@ function handleCalibrationBlink(duration) {
       saveCalibrationState();
       state.calibrationMode = null;
       state.calibrationCompleted = true;
-      document.getElementById("calibration-modal").classList.add("hidden");
+      document.getElementById("calibration-step").textContent = "";
+      document.getElementById("calibration-actions").classList.add("hidden");
+      document.getElementById("calibration-success-wrap").classList.remove("hidden");
       playBeep(800, 200);
     }
   }
-  updateCalibrationStep();
+  if (state.calibrationMode !== null) updateCalibrationStep();
 }
 
 function playAlarm() {
@@ -967,6 +1044,92 @@ function speakBrowser(text, noCancel = false) {
   } else {
     speechSynthesis.speak(u);
   }
+}
+
+/** Returns a Promise that resolves when the speech engine is ready and the first utterance has started (or after a short fallback). */
+function speakFirstAndWaitUntilStarted(text) {
+  if (!text || isModalOpen()) return Promise.resolve();
+  const engine = (config.voiceEngine || "browser").toLowerCase();
+  if (engine === "responsivevoice" && config.responsiveVoiceKey) {
+    speak(text);
+    return new Promise((r) => setTimeout(r, 150));
+  }
+  if (engine === "piper" && config.piperVoiceId) {
+    speak(text);
+    return new Promise((r) => setTimeout(r, 200));
+  }
+  if (!window.speechSynthesis) return Promise.resolve();
+  return new Promise((resolve) => {
+    const voices = speechSynthesis.getVoices();
+    let done = false;
+    const trySpeak = () => {
+      if (done) return;
+      done = true;
+      const u = new SpeechSynthesisUtterance(text);
+      u.volume = Math.max(0.1, config.volume);
+      u.rate = 0.85;
+      u.pitch = 1;
+      if (config.voiceUri) {
+        const voice = speechSynthesis.getVoices().find(v => v.voiceURI === config.voiceUri);
+        if (voice) u.voice = voice;
+      }
+      u.onstart = () => resolve();
+      u.onerror = () => resolve();
+      u.onend = () => {};
+      if (speechSynthesis.paused) speechSynthesis.resume();
+      speechSynthesis.cancel();
+      speechSynthesis.speak(u);
+      setTimeout(() => resolve(), 3000);
+    };
+    if (voices.length) trySpeak();
+    else {
+      speechSynthesis.addEventListener("voiceschanged", () => trySpeak(), { once: true });
+      setTimeout(() => trySpeak(), 2000);
+    }
+  });
+}
+
+/** Returns a Promise that resolves when the utterance has ended (or after a timeout). Use when you need to wait for speech to finish before continuing. */
+function speakAndWaitUntilEnded(text) {
+  if (!text || isModalOpen()) return Promise.resolve();
+  const engine = (config.voiceEngine || "browser").toLowerCase();
+  if (engine === "responsivevoice" && config.responsiveVoiceKey) {
+    speak(text);
+    return new Promise((r) => setTimeout(r, 2500));
+  }
+  if (engine === "piper" && config.piperVoiceId) {
+    speak(text);
+    return new Promise((r) => setTimeout(r, 2500));
+  }
+  if (!window.speechSynthesis) return Promise.resolve();
+  return new Promise((resolve) => {
+    const voices = speechSynthesis.getVoices();
+    let tried = false;
+    const finish = () => { resolve(); };
+    const trySpeak = () => {
+      if (tried) return;
+      tried = true;
+      const u = new SpeechSynthesisUtterance(text);
+      u.volume = Math.max(0.1, config.volume);
+      u.rate = 0.85;
+      u.pitch = 1;
+      if (config.voiceUri) {
+        const voice = speechSynthesis.getVoices().find(v => v.voiceURI === config.voiceUri);
+        if (voice) u.voice = voice;
+      }
+      u.onend = finish;
+      u.onerror = finish;
+      if (speechSynthesis.paused) speechSynthesis.resume();
+      speechSynthesis.cancel();
+      speechSynthesis.speak(u);
+      setTimeout(finish, 5000);
+    };
+    if (voices.length) trySpeak();
+    else {
+      speechSynthesis.addEventListener("voiceschanged", () => trySpeak(), { once: true });
+      setTimeout(() => trySpeak(), 2000);
+    }
+  });
 }
 
 async function speak(text, forcePlay = false) {
@@ -1136,7 +1299,7 @@ function renderCommunicationHistoryTable(containerId, options = {}) {
   const maxRows = options.maxRows ?? hist.length;
   const slice = [...hist].reverse().slice(0, maxRows);
   if (slice.length === 0) {
-    el.innerHTML = '<div class="comm-history-inner"><p class="event-empty">No communications yet.</p></div>';
+    el.innerHTML = '<div class="comm-history-inner"><p class="event-empty">No communications yet.</p><p class="event-empty-hint">When the patient selects an option (e.g. Thirsty, Pain), it will show here with the time. Entries stay on this device until you clear them.</p></div>';
     el.classList.remove("hidden");
     return;
   }
@@ -1181,7 +1344,7 @@ function renderDailySummary() {
   });
   const contentEl = document.getElementById("daily-summary-content");
   if (flat.length === 0) {
-    contentEl.innerHTML = '<p class="event-empty">No communications yet.</p>';
+    contentEl.innerHTML = '<p class="event-empty">No communications yet.</p><p class="event-empty-hint">When the patient selects an option, it will show here with the time. Entries stay on this device until you clear them.</p>';
     return;
   }
   const html = `
@@ -1229,7 +1392,7 @@ function renderDailySummaryLanding() {
   const today = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
   const todayEntries = hist.filter(e => e.date === today).slice(-8).reverse();
   if (todayEntries.length === 0) {
-    el.innerHTML = '<p class="event-empty">No communications today yet.</p>';
+    el.innerHTML = '<p class="event-empty">No communications today yet.</p><p class="event-empty-hint">When the patient selects an option, it will show here. Entries stay on this device until you clear them.</p>';
     return;
   }
   const html = todayEntries.map(e => {
@@ -1259,7 +1422,7 @@ function renderDailySummaryHome() {
   const today = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
   const todayEntries = hist.filter(e => e.date === today).slice(-8).reverse();
   if (todayEntries.length === 0) {
-    el.innerHTML = '<p class="event-empty">No communications today yet.</p>';
+    el.innerHTML = '<p class="event-empty">No communications today yet.</p><p class="event-empty-hint">When the patient selects an option, it will show here. Entries stay on this device until you clear them.</p>';
     return;
   }
   const html = todayEntries.map(e => {
@@ -1294,45 +1457,69 @@ function renderHomeEventLog() {
   renderCommunicationHistoryTable("home-event-log", { maxRows: COMPACT_EVENT_MAX_ROWS });
 }
 
-function renderScanItems(items, activeIndex, onSelect, colorMap = null, iconMap = null, context = null, showIcons = true) {
+function renderScanItems(items, activeIndex, onSelect, colorMap = null, iconMap = null, context = null, showIcons = false) {
   const html = items.map((item, i) => {
     const label = typeof item === "string" ? item : item.label || item;
+    const safeLabel = escapeHtml(String(label ?? ""));
     const color = (colorMap && colorMap[i]) || (typeof item === "object" && item.color ? COLORS[item.color] : null);
     const cls = i === activeIndex ? "scan-item active" : "scan-item";
     const iconName = showIcons ? ((iconMap && iconMap[i]) || getIconName(item, label, context)) : null;
-    const iconHtml = iconName ? `<i data-lucide="${iconName}" class="scan-item-icon" aria-hidden="true"></i>` : "";
-    const timingHtml = '<span class="scan-item-timing" aria-live="polite"></span>';
+    const iconHtml = iconName ? `<i data-lucide="${escapeHtml(iconName)}" class="scan-item-icon" aria-hidden="true"></i>` : "";
+    const timingHtml = '<span class="dwell-ring" aria-hidden="true"><span class="scan-item-timing" aria-live="polite"></span></span>';
     const selectHint = i === activeIndex ? '<span class="scan-item-select-hint">Long blink to choose</span>' : "";
     const tintStyle = color ? hexToTintStyle(color) : "";
-    return `<div class="${cls}" data-index="${i}" data-selectable${tintStyle} data-label="${String(label).replace(/"/g,"&quot;")}">${timingHtml}${selectHint}${iconHtml}<span class="scan-item-label">${String(label).replace(/</g,"&lt;").replace(/>/g,"&gt;")}</span></div>`;
+    return `<div class="${cls}" data-index="${i}" data-selectable${tintStyle} data-label="${safeLabel}">${selectHint}${iconHtml}<span class="scan-item-label">${safeLabel}</span>${timingHtml}</div>`;
   }).join("");
   return html;
 }
 
+const BACK_TO_HOME_ITEM = { label: "Back to home", id: "back_to_home", isBackToHome: true };
+const BACK_ONE_LEVEL_LABEL = "Back one level";
+const BACK_ONE_LEVEL_SPELLING = "BACK ONE LEVEL";
+
 function startScan(items, onSelect, options = {}) {
   if (state.scanInterval) clearInterval(state.scanInterval);
-  state.scanItems = items;
+  const inFlow = options.screenId && options.screenId !== "home";
+  const displayItems = inFlow ? [...items, BACK_TO_HOME_ITEM] : items;
+  state.scanItems = displayItems;
   state.scanIndex = 0;
-  state.onScanSelect = onSelect;
+  state.lastShownScanIndex = 0;
+
+  const wrappedOnSelect = (label, item) => {
+    if (item && item.isBackToHome) {
+      stopScan();
+      goToLanding();
+      return;
+    }
+    onSelect(label, item);
+  };
+  state.onScanSelect = wrappedOnSelect;
   state.scanOptions = options;
   const container = options.container;
-  const colorMap = options.colorMap;
+  const colorMap = inFlow && Array.isArray(options.colorMap) ? [...options.colorMap, null] : options.colorMap;
   const iconMap = options.iconMap;
   const context = options.context;
   const showIcons = options.showIcons !== false;
   const isSpelling = options.screenId === "spelling";
   const scanDuration = getScanDurationMs(isSpelling);
 
+  const firstItem = displayItems[0];
+  const firstLabel = typeof firstItem === "string" ? firstItem : (firstItem?.label ?? firstItem);
+  const speakOptions = options.speakOptions !== false;
+  const useVoice = speakOptions && config.auditory_scanning && firstLabel && !isModalOpen();
+
+  let firstTick = true;
   function tick() {
     if (state.paused || state.screen !== options.screenId) return;
     if (state.blinkStart > 0) return;
     state.scanTickStart = Date.now();
     state.scanTickDuration = scanDuration;
-    const item = items[state.scanIndex];
+    const item = displayItems[state.scanIndex];
     const label = typeof item === "string" ? item : (item?.label ?? item);
-    if (config.auditory_scanning && label && !isModalOpen()) speak(label);
+    if (!firstTick && speakOptions && config.auditory_scanning && label && !isModalOpen()) speak(label);
+    firstTick = false;
     if (container) {
-      container.innerHTML = renderScanItems(items, state.scanIndex, onSelect, colorMap, iconMap, context, showIcons);
+      container.innerHTML = renderScanItems(displayItems, state.scanIndex, wrappedOnSelect, colorMap, iconMap, context, showIcons);
       container.querySelectorAll(".scan-item").forEach((el, i) => {
         el.classList.toggle("active", i === state.scanIndex);
         addBlinkProgress(el, 0);
@@ -1340,15 +1527,36 @@ function startScan(items, onSelect, options = {}) {
       if (typeof lucide !== "undefined") lucide.createIcons({ root: container });
       runCountdownUpdate();
     }
-    state.scanIndex = (state.scanIndex + 1) % items.length;
+    state.lastShownScanIndex = state.scanIndex;
+    state.scanIndex = (state.scanIndex + 1) % displayItems.length;
   }
 
-  tick();
-  state.scanInterval = setInterval(tick, scanDuration);
+  function startCountdown() {
+    state.scanTickStart = Date.now();
+    state.scanTickDuration = scanDuration;
+    state.scanInterval = setInterval(tick, scanDuration);
+  }
+
+  if (container) {
+    container.innerHTML = renderScanItems(displayItems, 0, wrappedOnSelect, colorMap, iconMap, context, showIcons);
+    container.querySelectorAll(".scan-item").forEach((el, i) => {
+      el.classList.toggle("active", i === 0);
+      addBlinkProgress(el, 0);
+    });
+    if (typeof lucide !== "undefined") lucide.createIcons({ root: container });
+    runCountdownUpdate();
+  }
+
+  if (useVoice) {
+    speakFirstAndWaitUntilStarted(firstLabel).then(startCountdown);
+  } else {
+    startCountdown();
+  }
 }
 
 function stopScan() {
   if (state.scanInterval) { clearInterval(state.scanInterval); state.scanInterval = null; }
+  state.lastShownScanIndex = undefined;
 }
 
 function runCountdownUpdate() {
@@ -1356,12 +1564,21 @@ function runCountdownUpdate() {
   const duration = state.scanTickDuration || 5000;
   const remainingMs = Math.max(0, duration - (Date.now() - state.scanTickStart));
   const remainingSec = Math.ceil(remainingMs / 1000);
-  const timingText = remainingSec > 1 ? `about ${remainingSec}s` : remainingSec === 1 ? "about 1s" : "";
+  const timingText = remainingSec > 0 ? `${remainingSec}s` : "";
   const badgeText = remainingSec > 0 ? `${remainingSec}s` : "";
+  const dwellRemaining = duration > 0 ? remainingMs / duration : 0;
   const activeScreen = document.querySelector(".screen.active");
   if (activeScreen) {
-    activeScreen.querySelectorAll(".scan-item.active .scan-item-timing").forEach(el => { el.textContent = timingText; });
-    activeScreen.querySelectorAll(".quick-half.active .scan-item-countdown").forEach(el => { el.textContent = badgeText; });
+    activeScreen.querySelectorAll(".scan-item.active").forEach(el => {
+      el.style.setProperty("--dwell-remaining", String(dwellRemaining));
+      const timing = el.querySelector(".scan-item-timing");
+      if (timing) timing.textContent = timingText;
+    });
+    activeScreen.querySelectorAll(".quick-half.active").forEach(el => {
+      el.style.setProperty("--dwell-remaining", String(dwellRemaining));
+      const countdown = el.querySelector(".scan-item-countdown");
+      if (countdown) countdown.textContent = badgeText;
+    });
   }
 }
 
@@ -1369,6 +1586,17 @@ function addBlinkProgress(el, progress) {
   if (!el) return;
   el.style.setProperty("--blink-progress", Math.min(1, progress));
   el.classList.toggle("blink-in-progress", progress > 0 && progress < 1);
+}
+
+/** Go to the landing/starting screen (face_ready): quiet, no scan. Use for "Back to home" and "Back to starting screen". */
+function goToLanding() {
+  stopScan();
+  state.onScanSelect = null;
+  state.scanItems = null;
+  state.navStack = [];
+  state.summaryBlinkCount = 0;
+  showScreen("face_ready");
+  renderDailySummaryLanding();
 }
 
 function goHome() {
@@ -1410,7 +1638,7 @@ function goHome() {
       showSectionSelect();
     } else if (it.id === "spelling") showSpelling();
     else if (it.id === "quick") showQuickYesNo(null);
-  }, { container, screenId: "home", colorMap });
+  }, { container, screenId: "home", colorMap, showIcons: false });
 }
 
 function getSectionContext() {
@@ -1424,16 +1652,22 @@ function showSectionSelect() {
   document.getElementById("section-title").textContent = state.contentBoard?.label || "";
   const groups = state.contentBoard?.groups || [];
   const items = groups.map(g => ({ ...g, label: g.label, color: g.color }));
-  items.push({ label: "Go back", color: "red" });
+  items.push({ label: BACK_ONE_LEVEL_LABEL, color: "red" });
   const colors = items.map(i => COLORS[i.color] || null);
   const container = document.getElementById("section-items");
   startScan(items, (label, item) => {
     stopScan();
     const it = item || {};
-    if (it.label === "Go back") { state.navStack.pop(); goHome(); return; }
+    if (it.label === BACK_ONE_LEVEL_LABEL) { state.navStack.pop(); goHome(); return; }
     state.currentGroup = it;
-    showItemList(it.items);
-  }, { container, screenId: "section", colorMap: colors, context: getSectionContext() });
+    const groupItems = it.items || [];
+    if (groupItems.length === 0) {
+      state.navStack.push({ screen: "items", emptyGroup: true });
+      showConfirmation(it.label);
+      return;
+    }
+    showItemList(groupItems);
+  }, { container, screenId: "section", colorMap: colors, context: getSectionContext(), showIcons: false });
 }
 
 function getItemLabel(item) {
@@ -1446,7 +1680,7 @@ function hasSubItems(item) {
 
 function showItemList(groupItems) {
   state.navStack.push({ screen: "section", data: null });
-  const all = (groupItems || []).filter(x => x !== "Go back");
+  const all = (groupItems || []).filter(x => x !== BACK_ONE_LEVEL_LABEL);
   const pages = [];
   for (let i = 0; i < all.length; i += config.max_items_per_page) {
     pages.push(all.slice(i, i + config.max_items_per_page));
@@ -1479,18 +1713,18 @@ function renderItemPage() {
   } else {
     items.push(...page);
   }
-  items.push("Go back");
+  items.push(BACK_ONE_LEVEL_LABEL);
   const groupColor = state.currentGroup?.color ? COLORS[state.currentGroup.color] : null;
   const container = document.getElementById("items-list");
   const pagination = document.getElementById("items-pagination");
   pagination.innerHTML = state.itemPages.length > 1 ? `Page ${state.itemPage + 1} of ${state.itemPages.length}` : "";
   const pageStartInItems = state.itemPages.length > 1 && state.itemPage > 0 ? 1 : 0;
-  const colorMap = items.map((it, i) => (it === "Go back" || it === "PREV PAGE" || it === "NEXT PAGE") ? COLORS.red : groupColor);
+  const colorMap = items.map((it, i) => (it === BACK_ONE_LEVEL_LABEL || it === "PREV PAGE" || it === "NEXT PAGE") ? COLORS.red : groupColor);
   const groupIconName = getIconName(state.currentGroup, state.currentGroup?.label, getSectionContext());
-  const iconMap = items.map(it => (it === "Go back" || it === "PREV PAGE" || it === "NEXT PAGE") ? null : groupIconName);
+  const iconMap = items.map(it => (it === BACK_ONE_LEVEL_LABEL || it === "PREV PAGE" || it === "NEXT PAGE") ? null : groupIconName);
   startScan(items, (label, rawItem) => {
     stopScan();
-    if (label === "Go back") {
+    if (label === BACK_ONE_LEVEL_LABEL) {
       state.navStack.pop();
       if (state.itemPage > 0) { state.itemPage--; renderItemPage(); }
       else if (state.pendingParent) {
@@ -1521,25 +1755,37 @@ function renderItemPage() {
         }
       }
     }
-  }, { container, screenId: "items", colorMap, iconMap });
+  }, { container, screenId: "items", colorMap, iconMap, showIcons: false });
 }
 
 function showConfirmation(item) {
+  stopScan();
+  state.onScanSelect = null;
+  state.scanItems = null;
   showScreen("confirm");
   document.getElementById("confirm-item").textContent = item;
   const opts = [{ label: "Yes, that's right", color: "green" }, { label: "No, go back", color: "red" }];
   const container = document.getElementById("confirm-options");
-  startScan(opts, (label) => {
-    stopScan();
-    if (label.startsWith("Yes")) {
-      logEvent(item);
-      state.lastSelection = item;
-      showAnythingElse();
-    } else {
-      state.navStack.pop();
-      renderItemPage();
-    }
-  }, { container, screenId: "confirm", colorMap: [COLORS.green, COLORS.red] });
+  const step4Phrase = "You have selected \u201C" + item + "\u201D";
+  const startConfirmScan = () => {
+    startScan(opts, (label) => {
+      stopScan();
+      if (label.startsWith("Yes")) {
+        logEvent(item);
+        state.lastSelection = item;
+        showAnythingElse();
+      } else {
+        const popped = state.navStack.pop();
+        if (popped?.emptyGroup) showSectionSelect();
+        else renderItemPage();
+      }
+    }, { container, screenId: "confirm", colorMap: [COLORS.green, COLORS.red], showIcons: true });
+  };
+  if (config.auditory_scanning && !isModalOpen()) {
+    speakAndWaitUntilEnded(step4Phrase).then(startConfirmScan);
+  } else {
+    startConfirmScan();
+  }
 }
 
 function showAnythingElse() {
@@ -1555,7 +1801,7 @@ function showAnythingElse() {
     stopScan();
     if (label === "I need something else") goHome();
     else showSummary();
-  }, { container, screenId: "anything-else", colorMap: [COLORS.green, COLORS.blue] });
+  }, { container, screenId: "anything-else", colorMap: [COLORS.green, COLORS.blue], showIcons: true });
 }
 
 function showSpelling() {
@@ -1571,7 +1817,7 @@ function spellingScanRows() {
   document.getElementById("word-strip").textContent = state.spellingWord || "(building word)";
   document.getElementById("spelling-row-label").textContent = "Select row";
   const rows = state.spellingBoard.rows;
-  const backRow = { id: "go_back", label: "Go back", color: "red", items: [] };
+  const backRow = { id: "go_back", label: BACK_ONE_LEVEL_LABEL, color: "red", items: [] };
   const rowsWithBack = [...rows, backRow];
   const container = document.getElementById("spelling-row-items");
   const colorMap = rowsWithBack.map(r => COLORS[r.color]);
@@ -1584,10 +1830,10 @@ function spellingScanRows() {
       return;
     }
     if (r.id === "controls") {
-      const controlItems = [...r.items, "GO BACK"];
+      const controlItems = [...r.items, BACK_ONE_LEVEL_SPELLING];
       startScan(controlItems, (label2) => {
         stopScan();
-        if (label2 === "GO BACK") {
+        if (label2 === BACK_ONE_LEVEL_SPELLING) {
           spellingScanRows();
           return;
         }
@@ -1595,10 +1841,10 @@ function spellingScanRows() {
       }, { container, screenId: "spelling", colorMap: controlItems.map(() => COLORS[r.color]), showIcons: false });
     } else {
       document.getElementById("spelling-row-label").textContent = "Row: " + r.label;
-      const letterItems = [...r.items, "GO BACK"];
+      const letterItems = [...r.items, BACK_ONE_LEVEL_SPELLING];
       startScan(letterItems, (label2) => {
         stopScan();
-        if (label2 === "GO BACK") {
+        if (label2 === BACK_ONE_LEVEL_SPELLING) {
           spellingScanRows();
           return;
         }
@@ -1845,6 +2091,56 @@ function getBoardKey(navId) {
   return NAV_TO_BOARD[navId] || navId;
 }
 
+function customizeRenameAt(path, index, currentLabel) {
+  const draft = state.customizeDraft;
+  const boards = draft?.boards || {};
+  const nav = draft?.navigation_root || {};
+  const newLabel = prompt("Rename:", currentLabel || "");
+  if (newLabel == null || String(newLabel).trim() === "") return;
+  const trimmed = String(newLabel).trim();
+  if (path.length === 0) {
+    const order = nav.scan_order || [];
+    const sid = order[index];
+    if (!sid) return;
+    const boardKey = getBoardKey(sid);
+    const board = boards[boardKey] || content?.boards?.[boardKey] || { label: "", groups: [] };
+    state.customizeDraft.boards = { ...state.customizeDraft.boards, [boardKey]: { ...board, label: trimmed } };
+  } else if (path.length === 1) {
+    const boardKey = path[0];
+    const board = state.customizeDraft?.boards?.[boardKey] || content?.boards?.[boardKey] || { groups: [] };
+    const groups = [...(board.groups || [])];
+    if (groups[index]) groups[index] = { ...groups[index], label: trimmed };
+    state.customizeDraft.boards = { ...state.customizeDraft.boards, [boardKey]: { ...board, groups } };
+  } else if (path.length === 2) {
+    const [boardKey, groupIdx] = path;
+    const board = state.customizeDraft?.boards?.[boardKey] || content?.boards?.[boardKey] || { groups: [] };
+    const group = (board.groups || [])[groupIdx] || { items: [] };
+    const items = [...(group.items || [])];
+    const it = items[index];
+    if (typeof it === "string") items[index] = trimmed;
+    else if (it && typeof it === "object") items[index] = { ...it, label: trimmed };
+    const newGroups = [...(board.groups || [])];
+    newGroups[groupIdx] = { ...group, items };
+    state.customizeDraft.boards = { ...state.customizeDraft.boards, [boardKey]: { ...board, groups: newGroups } };
+  } else if (path.length === 3) {
+    const [boardKey, groupIdx, itemIdx] = path;
+    const board = state.customizeDraft?.boards?.[boardKey] || content?.boards?.[boardKey] || { groups: [] };
+    const group = (board.groups || [])[groupIdx] || { items: [] };
+    const item = (group.items || [])[itemIdx];
+    const subItems = (typeof item === "object" && item?.subItems) ? [...item.subItems] : [];
+    const s = subItems[index];
+    if (typeof s === "string") subItems[index] = trimmed;
+    else if (s && typeof s === "object") subItems[index] = { ...s, label: trimmed };
+    const newItems = [...(group.items || [])];
+    const updatedItem = typeof item === "object" ? { ...item, subItems } : { label: item, subItems };
+    newItems[itemIdx] = updatedItem;
+    const newGroups = [...(board.groups || [])];
+    newGroups[groupIdx] = { ...group, items: newItems };
+    state.customizeDraft.boards = { ...state.customizeDraft.boards, [boardKey]: { ...board, groups: newGroups } };
+  }
+  renderCustomizeView();
+}
+
 function openCustomizeModal() {
   state.customizeDraft = JSON.parse(JSON.stringify(state.config || { boards: {}, navigation_root: { scan_order: [] } }));
   state.customizePath = [];
@@ -1953,15 +2249,17 @@ function renderCustomizeView() {
     addBtn.disabled = order.length >= ROOT_MAX;
     if (addGroupBtn) { addGroupBtn.textContent = "+ Add new group"; addGroupBtn.classList.remove("hidden"); addGroupBtn.disabled = order.length >= ROOT_MAX; }
     const isBoard = (sid) => !FIXED_ROOT_IDS.includes(sid) && (NAV_TO_BOARD[sid] || boards[sid]);
-    list.innerHTML = order.map(sid => {
+    list.innerHTML = order.map((sid, index) => {
       const label = builtInLabels[sid] || boards[sid]?.label || sid;
       const fixed = FIXED_ROOT_IDS.includes(sid);
       const canEnter = isBoard(sid);
       const openBtn = canEnter ? `<button type="button" class="tile-open" data-id="${escapeHtml(sid)}">Open ›</button>` : "";
       const removeBtn = fixed ? "" : `<button type="button" class="tile-remove" data-id="${escapeHtml(sid)}" aria-label="Remove">\u2715</button>`;
-      return `<li data-id="${escapeHtml(sid)}" data-enter="${canEnter}" draggable="${!fixed}" ${fixed ? 'data-fixed="1"' : ""}>
+      const renameBtn = `<button type="button" class="tile-rename" data-index="${index}" aria-label="Rename" title="Rename">Edit</button>`;
+      return `<li data-id="${escapeHtml(sid)}" data-index="${index}" data-enter="${canEnter}" draggable="${!fixed}" ${fixed ? 'data-fixed="1"' : ""}>
         <span class="drag-handle" aria-hidden="true">\u2630</span>
         <span class="tile-label">${escapeHtml(label)}</span>
+        ${renameBtn}
         ${openBtn}
         ${removeBtn}
       </li>`;
@@ -1985,6 +2283,17 @@ function renderCustomizeView() {
         renderCustomizeView();
       });
     });
+    list.querySelectorAll(".tile-rename").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const index = parseInt(btn.dataset.index, 10);
+        if (isNaN(index)) return;
+        const order = nav.scan_order || [];
+        const sid = order[index];
+        const label = builtInLabels[sid] || boards[sid]?.label || sid;
+        customizeRenameAt([], index, label);
+      });
+    });
   } else if (path.length === 1) {
     const boardKey = path[0];
     const board = boards[boardKey] || content?.boards?.[boardKey] || { label: "", groups: [] };
@@ -1997,6 +2306,7 @@ function renderCustomizeView() {
       <li data-index="${i}" data-id="${escapeHtml(g.id || "")}" data-enter="true" draggable="true">
         <span class="drag-handle" aria-hidden="true">\u2630</span>
         <span class="tile-label">${escapeHtml(g.label || "")}</span>
+        <button type="button" class="tile-rename" data-index="${i}" aria-label="Rename" title="Rename">Edit</button>
         <button type="button" class="tile-open" data-index="${i}">Open ›</button>
         <button type="button" class="tile-remove" data-index="${i}" aria-label="Remove">\u2715</button>
       </li>`).join("");
@@ -2017,6 +2327,15 @@ function renderCustomizeView() {
         renderCustomizeView();
       });
     });
+    list.querySelectorAll(".tile-rename").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const idx = parseInt(btn.dataset.index, 10);
+        if (isNaN(idx)) return;
+        const g = groups[idx];
+        customizeRenameAt([boardKey], idx, g?.label || "");
+      });
+    });
   } else if (path.length === 2) {
     const [boardKey, groupIdx] = path;
     const board = boards[boardKey] || content?.boards?.[boardKey] || { groups: [] };
@@ -2033,6 +2352,7 @@ function renderCustomizeView() {
       return `<li data-index="${i}" data-enter="${hasSub}" draggable="true">
         <span class="drag-handle" aria-hidden="true">\u2630</span>
         <span class="tile-label">${escapeHtml(label)}</span>
+        <button type="button" class="tile-rename" data-index="${i}" aria-label="Rename" title="Rename">Edit</button>
         ${openBtn}
         <button type="button" class="tile-remove" data-index="${i}" aria-label="Remove">\u2715</button>
       </li>`;
@@ -2055,6 +2375,16 @@ function renderCustomizeView() {
         renderCustomizeView();
       });
     });
+    list.querySelectorAll(".tile-rename").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const idx = parseInt(btn.dataset.index, 10);
+        if (isNaN(idx)) return;
+        const it = items[idx];
+        const label = typeof it === "string" ? it : (it?.label || "");
+        customizeRenameAt([boardKey, groupIdx], idx, label);
+      });
+    });
   } else if (path.length === 3) {
     const [boardKey, groupIdx, itemIdx] = path;
     const board = boards[boardKey] || content?.boards?.[boardKey] || { groups: [] };
@@ -2070,6 +2400,7 @@ function renderCustomizeView() {
       <li data-index="${i}" draggable="true">
         <span class="drag-handle" aria-hidden="true">\u2630</span>
         <span class="tile-label">${escapeHtml(typeof s === "string" ? s : s?.label || "")}</span>
+        <button type="button" class="tile-rename" data-index="${i}" aria-label="Rename" title="Rename">Edit</button>
         <button type="button" class="tile-remove" data-index="${i}" aria-label="Remove">\u2715</button>
       </li>`).join("");
     list.querySelectorAll(".tile-remove").forEach(btn => {
@@ -2085,6 +2416,16 @@ function renderCustomizeView() {
         newGroups[groupIdx] = { ...group, items: newItems };
         state.customizeDraft.boards = { ...state.customizeDraft.boards, [boardKey]: { ...board, groups: newGroups } };
         renderCustomizeView();
+      });
+    });
+    list.querySelectorAll(".tile-rename").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const idx = parseInt(btn.dataset.index, 10);
+        if (isNaN(idx)) return;
+        const s = subItems[idx];
+        const label = typeof s === "string" ? s : (s?.label || "");
+        customizeRenameAt([boardKey, groupIdx, itemIdx], idx, label);
       });
     });
   }
@@ -2377,8 +2718,10 @@ function updateSummaryBlinkPrompt() {
 }
 
 function escapeHtml(s) {
+  if (s == null) return "";
+  const str = typeof s === "string" ? s : String(s);
   const div = document.createElement("div");
-  div.textContent = s;
+  div.textContent = str;
   return div.innerHTML;
 }
 
@@ -2501,6 +2844,21 @@ document.getElementById("app").addEventListener("click", (e) => {
   if (state.onScanSelect && state.scanItems?.length && !state.paused) triggerSelectByIndex(idx);
 });
 
+function updateCameraButton() {
+  const btn = document.getElementById("btn-camera-toggle");
+  if (!btn) return;
+  const isOff = state.paused;
+  const icon = btn.querySelector(".btn-camera-icon");
+  const label = btn.querySelector(".btn-camera-label");
+  if (label) label.textContent = isOff ? "Camera on" : "Camera off";
+  btn.title = isOff ? "Turn camera on" : "Turn camera off";
+  btn.setAttribute("aria-label", isOff ? "Turn camera on" : "Turn camera off");
+  if (icon) {
+    icon.setAttribute("data-lucide", isOff ? "video-off" : "video");
+    if (typeof lucide !== "undefined") lucide.createIcons({ root: btn });
+  }
+}
+
 async function unpauseSession() {
   state.paused = false;
   const btn = document.getElementById("btn-pause");
@@ -2509,6 +2867,7 @@ async function unpauseSession() {
   if (patientPause) patientPause.textContent = "Pause";
   document.getElementById("pause-overlay")?.classList.add("hidden");
   try { await startCamera(); } catch (e) { console.warn("Camera restart failed:", e); }
+  updateCameraButton();
 }
 
 function stopCamera() {
@@ -2554,7 +2913,7 @@ document.addEventListener("blink-select", () => {
   if (!state.onScanSelect || !state.scanItems?.length) return;
   playBeep(1200, 300);
   const items = state.scanItems;
-  const idx = (state.scanIndex - 1 + items.length) % items.length;
+  const idx = typeof state.lastShownScanIndex === "number" ? state.lastShownScanIndex : (state.scanIndex - 1 + items.length) % items.length;
   const item = items[idx];
   const label = typeof item === "string" ? item : (item?.label ?? item);
   const cb = state.onScanSelect;
@@ -2570,12 +2929,13 @@ async function startCamera() {
 }
 
 function showInitError(msg) {
+  const safeMsg = escapeHtml(String(msg ?? ""));
   const container = document.querySelector(".camera-container");
   if (container) {
-    container.innerHTML = `<div style="padding:40px 24px;text-align:center;color:#fca5a5;font-size:18px;line-height:1.6;">${msg}</div>`;
+    container.innerHTML = `<div style="padding:40px 24px;text-align:center;color:#fca5a5;font-size:18px;line-height:1.6;">${safeMsg}</div>`;
   }
   const instr = document.querySelector(".instruction");
-  if (instr) instr.insertAdjacentHTML("afterend", `<p style="color:#fca5a5;font-size:16px;margin-top:12px;">${msg}</p>`);
+  if (instr) instr.insertAdjacentHTML("afterend", `<p style="color:#fca5a5;font-size:16px;margin-top:12px;">${safeMsg}</p>`);
 }
 
 async function init() {
@@ -2589,7 +2949,17 @@ async function init() {
   document.body.classList.toggle("patient-mode", !state.caregiverMode);
   const cgBtn = document.getElementById("caregiver-toggle");
   if (cgBtn) cgBtn.textContent = state.caregiverMode ? "Patient view" : "Caregiver";
+  const panelBtn = document.getElementById("caregiver-toggle-panel");
+  if (panelBtn) panelBtn.textContent = state.caregiverMode ? "Patient view" : "Caregiver";
+  if (state.caregiverMode) openCaregiverPanel();
   updateStatusHint();
+  if (!localStorage.getItem(ONBOARDING_SEEN_KEY)) {
+    document.getElementById("onboarding-overlay")?.classList.remove("hidden");
+  }
+  document.getElementById("onboarding-continue")?.addEventListener("click", () => {
+    try { localStorage.setItem(ONBOARDING_SEEN_KEY, "1"); } catch (_) {}
+    document.getElementById("onboarding-overlay")?.classList.add("hidden");
+  });
   document.querySelector(".camera-container")?.insertAdjacentHTML("beforeend", '<p class="init-status" style="position:absolute;bottom:12px;left:0;right:0;text-align:center;color:#94a3b8;font-size:14px;">Loading…</p>');
   try {
     await loadContent();
@@ -2621,6 +2991,22 @@ async function init() {
     } else {
       try { await startCamera(); } catch (e) { console.warn("Camera restart failed:", e); }
     }
+    updateCameraButton();
+  });
+  document.getElementById("btn-camera-toggle").addEventListener("click", async () => {
+    if (state.paused) {
+      await unpauseSession();
+      return;
+    }
+    state.paused = true;
+    stopCamera();
+    const btn = document.getElementById("btn-pause");
+    const patientPause = document.getElementById("btn-pause-patient");
+    if (btn) { btn.textContent = "Resume"; btn.classList.add("paused"); }
+    if (patientPause) patientPause.textContent = "Resume";
+    const overlay = document.getElementById("pause-overlay");
+    if (overlay) overlay.classList.remove("hidden");
+    updateCameraButton();
   });
   document.getElementById("pause-overlay")?.addEventListener("click", () => {
     if (state.paused) unpauseSession();
@@ -2628,11 +3014,19 @@ async function init() {
   document.getElementById("pause-overlay")?.addEventListener("keydown", (e) => {
     if (state.paused && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); unpauseSession(); }
   });
+  function updateMuteButtonLabel() {
+    const btn = document.getElementById("btn-mute");
+    if (!btn) return;
+    btn.textContent = config.auditory_scanning ? "Mute" : "Unmute";
+    btn.classList.toggle("muted", !config.auditory_scanning);
+  }
   document.getElementById("btn-mute").addEventListener("click", () => {
     config.auditory_scanning = !config.auditory_scanning;
-    const btn = document.getElementById("btn-mute");
-    btn.textContent = config.auditory_scanning ? "Sound" : "Muted";
-    btn.classList.toggle("muted", !config.auditory_scanning);
+    updateMuteButtonLabel();
+    if (config.auditory_scanning) {
+      playBeep(600, 100);
+      setTimeout(() => speak("Sound on", true), 150);
+    }
   });
   document.getElementById("btn-quick-yes-no").addEventListener("click", () => {
     const ret = state.screen === "face_ready" ? "face_ready" : state.screen;
@@ -2642,6 +3036,23 @@ async function init() {
     document.getElementById("screen-emergency").classList.add("hidden");
     if (state.screen !== "face_ready") goHome();
   });
+  function updateSettingsSliderLabels() {
+    const scanMs = parseInt(document.getElementById("setting-scan-speed")?.value, 10) || config.scan_speed_ms;
+    const blinkMs = parseInt(document.getElementById("setting-blink-ms")?.value, 10) || config.selection_blink_ms;
+    const emergencyMs = parseInt(document.getElementById("setting-emergency-ms")?.value, 10) || config.emergency_blink_ms;
+    const scanLabel = document.getElementById("setting-scan-speed-label");
+    const scanMsEl = document.getElementById("setting-scan-speed-ms");
+    if (scanLabel) scanLabel.textContent = getScanSpeedLabel(scanMs);
+    if (scanMsEl) scanMsEl.textContent = String(scanMs);
+    const blinkLabel = document.getElementById("setting-blink-label");
+    const blinkMsVal = document.getElementById("setting-blink-ms-value");
+    if (blinkLabel) blinkLabel.textContent = getSelectionBlinkLabel(blinkMs);
+    if (blinkMsVal) blinkMsVal.textContent = String(blinkMs);
+    const emergencyLabel = document.getElementById("setting-emergency-label");
+    const emergencyMsVal = document.getElementById("setting-emergency-ms-value");
+    if (emergencyLabel) emergencyLabel.textContent = getEmergencyBlinkLabel(emergencyMs);
+    if (emergencyMsVal) emergencyMsVal.textContent = String(emergencyMs);
+  }
   document.getElementById("btn-settings-main").addEventListener("click", () => {
     closeSetupDropdown();
     document.getElementById("settings-modal").classList.remove("hidden");
@@ -2649,6 +3060,7 @@ async function init() {
     document.getElementById("setting-scan-speed").value = config.scan_speed_ms;
     document.getElementById("setting-blink-ms").value = config.selection_blink_ms;
     document.getElementById("setting-emergency-ms").value = config.emergency_blink_ms;
+    updateSettingsSliderLabels();
     document.getElementById("setting-auditory").checked = config.auditory_scanning;
     document.getElementById("setting-volume").value = config.volume * 100;
     document.getElementById("setting-voice-engine").value = config.voiceEngine || "browser";
@@ -2706,16 +3118,18 @@ async function init() {
     setTimeout(() => playBeep(1000, 150), 400);
     setTimeout(() => speak("Testing. One. Two. Three.", true), 700);
   });
+  ["setting-scan-speed", "setting-blink-ms", "setting-emergency-ms"].forEach(id => {
+    document.getElementById(id)?.addEventListener("input", updateSettingsSliderLabels);
+  });
   document.getElementById("btn-settings-close").addEventListener("click", () => {
-    document.getElementById("settings-modal").classList.add("hidden");
-    config.scan_speed_ms = parseInt(document.getElementById("setting-scan-speed").value, 10);
-    config.selection_blink_ms = parseInt(document.getElementById("setting-blink-ms").value, 10);
+    config.scan_speed_ms = Math.min(8000, Math.max(2000, parseInt(document.getElementById("setting-scan-speed").value, 10) || config.scan_speed_ms));
+    config.selection_blink_ms = Math.min(1500, Math.max(500, parseInt(document.getElementById("setting-blink-ms").value, 10) || config.selection_blink_ms));
+    config.emergency_blink_ms = Math.min(8000, Math.max(3000, parseInt(document.getElementById("setting-emergency-ms").value, 10) || config.emergency_blink_ms));
     localStorage.setItem("bedsideblink_calibration", JSON.stringify({
       selection_blink_ms: config.selection_blink_ms,
       scan_speed_ms: config.scan_speed_ms,
       calibrationCompleted: state.calibrationCompleted
     }));
-    config.emergency_blink_ms = parseInt(document.getElementById("setting-emergency-ms").value, 10);
     config.auditory_scanning = document.getElementById("setting-auditory").checked;
     config.volume = parseInt(document.getElementById("setting-volume").value, 10) / 100;
     config.voiceEngine = document.getElementById("setting-voice-engine").value || "browser";
@@ -2723,6 +3137,14 @@ async function init() {
     const pv = document.getElementById("setting-piper-voice").value;
     config.piperVoiceId = (pv && pv.trim()) ? pv : null;
     saveVoiceConfig();
+    updateMuteButtonLabel();
+    document.getElementById("settings-modal").classList.add("hidden");
+    const toast = document.getElementById("global-toast");
+    if (toast) {
+      toast.textContent = "Settings saved";
+      toast.classList.remove("hidden");
+      setTimeout(() => toast.classList.add("hidden"), 2500);
+    }
   });
   document.getElementById("btn-new-session").addEventListener("click", () => { state.session = []; goHome(); });
   document.getElementById("btn-end-session").addEventListener("click", () => { showScreen("face_ready"); });
@@ -2740,13 +3162,19 @@ async function init() {
     state.calibrationMode = null;
     document.getElementById("calibration-modal").classList.add("hidden");
   });
+  document.getElementById("btn-calibration-done")?.addEventListener("click", () => {
+    state.calibrationMode = null;
+    document.getElementById("calibration-modal").classList.add("hidden");
+  });
   document.getElementById("calibration-scan-speed")?.addEventListener("input", (e) => {
     const val = parseInt(e.target.value, 10);
     if (!isNaN(val) && val >= 2000 && val <= 8000) config.scan_speed_ms = val;
+    updateCalibrationSliderLabel();
   });
   document.getElementById("calibration-scan-speed")?.addEventListener("change", (e) => {
     const val = parseInt(e.target.value, 10);
     if (!isNaN(val) && val >= 2000 && val <= 8000) config.scan_speed_ms = val;
+    updateCalibrationSliderLabel();
   });
   function closeDailySummaryModal() {
     document.getElementById("daily-summary-modal").classList.add("hidden");
@@ -2790,16 +3218,32 @@ async function init() {
     document.getElementById("daily-summary-modal").classList.remove("hidden");
   });
   document.getElementById("btn-home")?.addEventListener("click", () => {
-    if (state.screen === "face_ready" || state.screen === "home") return;
-    goHome();
-  });
-  document.getElementById("btn-home-patient")?.addEventListener("click", () => {
+    stopScan();
     state.navStack = [];
     showScreen("face_ready");
+    renderDailySummaryLanding();
+  });
+  document.getElementById("btn-home-patient")?.addEventListener("click", () => {
+    goHome();
+  });
+  document.body.addEventListener("click", (e) => {
+    if (e.target.closest(".btn-cancel-flow")) {
+      e.preventDefault();
+      goHome();
+    }
   });
   document.getElementById("caregiver-toggle")?.addEventListener("click", toggleCaregiverMode);
+  document.getElementById("caregiver-toggle-panel")?.addEventListener("click", () => {
+    toggleCaregiverMode();
+    closeCaregiverPanel();
+  });
+  document.getElementById("btn-caregiver-menu")?.addEventListener("click", toggleCaregiverPanel);
+  document.getElementById("btn-caregiver-panel-close")?.addEventListener("click", closeCaregiverPanel);
   document.getElementById("btn-pause-patient")?.addEventListener("click", () => {
     document.getElementById("btn-pause")?.click();
+  });
+  document.getElementById("btn-back-to-starting")?.addEventListener("click", () => {
+    goToLanding();
   });
   document.getElementById("btn-daily-summary-close").addEventListener("click", closeDailySummaryModal);
   document.getElementById("daily-summary-modal").addEventListener("click", (e) => {
@@ -2807,6 +3251,12 @@ async function init() {
   });
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
+    const panel = document.getElementById("caregiver-nav-panel");
+    if (panel && panel.classList.contains("panel-open")) {
+      closeCaregiverPanel();
+      e.preventDefault();
+      return;
+    }
     if (!document.getElementById("daily-summary-modal").classList.contains("hidden")) closeDailySummaryModal();
     else if (!document.getElementById("sitemap-modal").classList.contains("hidden")) closeSiteMapModal();
   });
@@ -2856,8 +3306,10 @@ async function init() {
   }
   document.querySelector(".init-status")?.remove();
   updateFaceReadyBlinkHint();
+  updateMuteButtonLabel();
   renderDailySummaryLanding();
   processFrame();
+  updateCameraButton();
 
   setInterval(runCountdownUpdate, 150);
 }
