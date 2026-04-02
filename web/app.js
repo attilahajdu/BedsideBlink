@@ -3341,7 +3341,9 @@ async function init() {
   ["setting-scan-speed", "setting-blink-ms", "setting-emergency-ms"].forEach(id => {
     document.getElementById(id)?.addEventListener("input", updateSettingsSliderLabels);
   });
-  document.getElementById("btn-settings-close").addEventListener("click", () => {
+  function closeSettingsModal() {
+    const modal = document.getElementById("settings-modal");
+    if (!modal || modal.classList.contains("hidden")) return;
     config.scan_speed_ms = Math.min(8000, Math.max(2000, parseInt(document.getElementById("setting-scan-speed").value, 10) || config.scan_speed_ms));
     config.selection_blink_ms = Math.min(1500, Math.max(500, parseInt(document.getElementById("setting-blink-ms").value, 10) || config.selection_blink_ms));
     config.emergency_blink_ms = Math.min(8000, Math.max(3000, parseInt(document.getElementById("setting-emergency-ms").value, 10) || config.emergency_blink_ms));
@@ -3358,13 +3360,18 @@ async function init() {
     config.piperVoiceId = (pv && pv.trim()) ? pv : null;
     saveVoiceConfig();
     updateMuteButtonLabel();
-    document.getElementById("settings-modal").classList.add("hidden");
+    modal.classList.add("hidden");
     const toast = document.getElementById("global-toast");
     if (toast) {
       toast.textContent = "Settings saved";
       toast.classList.remove("hidden");
       setTimeout(() => toast.classList.add("hidden"), 2500);
     }
+  }
+  document.getElementById("btn-settings-close").addEventListener("click", closeSettingsModal);
+  document.getElementById("btn-settings-header-close").addEventListener("click", closeSettingsModal);
+  document.getElementById("settings-modal").addEventListener("click", (e) => {
+    if (e.target === e.currentTarget) closeSettingsModal();
   });
   document.getElementById("btn-new-session").addEventListener("click", () => { state.session = []; goHome(); });
   document.getElementById("btn-end-session").addEventListener("click", () => { showScreen("face_ready"); });
@@ -3480,6 +3487,11 @@ async function init() {
     const panel = document.getElementById("caregiver-nav-panel");
     if (panel && panel.classList.contains("panel-open")) {
       closeCaregiverPanel();
+      e.preventDefault();
+      return;
+    }
+    if (!document.getElementById("settings-modal").classList.contains("hidden")) {
+      closeSettingsModal();
       e.preventDefault();
       return;
     }

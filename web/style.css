@@ -1331,10 +1331,29 @@ body.patient-mode #screen-summary.active { grid-template-columns: 1fr; }
 .settings-modal-content {
   max-width: 860px;
   width: 100%;
-  max-height: 90vh;
-  overflow: visible;
+  max-height: min(90vh, 100dvh - 48px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-bottom: 0;
 }
-.settings-modal-content h2 { margin-bottom: 16px; }
+.settings-modal-header {
+  flex-shrink: 0;
+  margin-bottom: 12px;
+}
+.settings-modal-body {
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  -webkit-overflow-scrolling: touch;
+  padding-right: 6px;
+}
+.settings-modal-content .settings-footer {
+  flex-shrink: 0;
+  margin-top: 0;
+  padding: 16px 0 32px;
+}
+.settings-modal-content h2 { margin-bottom: 0; }
 .settings-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
