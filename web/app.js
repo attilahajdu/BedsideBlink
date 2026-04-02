@@ -209,6 +209,8 @@ let state = {
   scanTickDuration: 5000,
   session: [],
   paused: false,
+  cameraOff: false,
+  cameraOffGlowTimeout: null,
   faceLostAt: null,
   contentBoard: null,
   itemPage: 0,
@@ -235,11 +237,22 @@ let state = {
   otpResendAt: 0,
   otpEmail: "",
   lastCloudBackupAt: null,
-  stateOrigin: "local"
+  stateOrigin: "local",
+  /** 1 = every frame; 2 = detect every other frame (iPad), reuse cached landmarks between. */
+  landmarkerFrameStride: 1,
+  landmarkerFrameTick: 0,
+  cachedLandmarkResults: null,
+  lastCameraSettings: null,
+  visibilityHadActiveScan: false
 };
 
 const CAREGIVER_MODE_KEY = "bedsideblink_caregiver_mode";
 const ONBOARDING_SEEN_KEY = "bedsideblink_onboarding_seen";
+/** Caregiver intro toast — long enough to read fully */
+const CAREGIVER_MODE_TOAST_MS = 10000;
+let caregiverModeToastTimeout = null;
+/** Flow screens where cancel stops scanning and returns to face-ready (Begin). */
+const CANCEL_FLOW_SCREEN_IDS = new Set(["home", "section", "items", "confirm", "anything-else", "spelling", "quick-yes-no", "summary"]);
 
 function closeCaregiverPanel() {
   document.body.classList.remove("nav-panel-open");
@@ -285,11 +298,19 @@ function setCaregiverMode(on) {
   if (state.caregiverMode && !wasCaregiver) {
     const toast = document.getElementById("global-toast");
     if (toast) {
-      toast.textContent = "Caregiver mode — use the menu on the right for Summary, Setup, and more.";
+      if (caregiverModeToastTimeout) {
+        clearTimeout(caregiverModeToastTimeout);
+        caregiverModeToastTimeout = null;
+      }
+      toast.textContent = "Caregiver mode — use the menu on the right to see today's messages, edit phrases, and adjust settings.";
       toast.classList.remove("hidden");
-      setTimeout(() => toast.classList.add("hidden"), 3000);
+      caregiverModeToastTimeout = setTimeout(() => {
+        toast.classList.add("hidden");
+        caregiverModeToastTimeout = null;
+      }, CAREGIVER_MODE_TOAST_MS);
     }
   }
+  updateCancelFlowChrome();
 }
 
 function toggleCaregiverMode() {
@@ -859,10 +880,18 @@ function saveVoiceConfig() {
   } catch (_) {}
 }
 
+let sharedAudioContext = null;
+function getSharedAudioContext() {
+  if (!sharedAudioContext) {
+    sharedAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  return sharedAudioContext;
+}
+
 function playBeep(freq = 800, duration = 200) {
   try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    if (ctx.state === "suspended") ctx.resume();
+    const ctx = getSharedAudioContext();
+    if (ctx.state === "suspended") ctx.resume().catch(() => {});
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.connect(gain);
@@ -890,7 +919,7 @@ async function loadPiperTts() {
 }
 
 function isModalOpen() {
-  const modals = ["settings-modal", "calibration-modal", "customize-modal", "daily-summary-modal", "sitemap-modal"];
+  const modals = ["settings-modal", "calibration-modal", "customize-modal", "daily-summary-modal", "phrase-map-modal"];
   return modals.some(id => {
     const el = document.getElementById(id);
     return el && !el.classList.contains("hidden");
@@ -978,7 +1007,8 @@ function handleCalibrationBlink(duration) {
 
 function playAlarm() {
   try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const ctx = getSharedAudioContext();
+    if (ctx.state === "suspended") ctx.resume().catch(() => {});
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.connect(gain);
@@ -1203,7 +1233,9 @@ function showScreen(id) {
     state.faceReadyBlinkCount = 0;
     updateFaceReadyBlinkHint();
     renderDailySummaryLanding();
+    updateCameraButton();
   }
+  updateCancelFlowChrome();
 }
 
 function updateStatus(step, last) {
@@ -1227,6 +1259,11 @@ function updateStatus(step, last) {
 function updateStatusFaceIcon() {
   const el = document.getElementById("status-face-icon");
   if (!el) return;
+  if (state.cameraOff) {
+    el.classList.add("hidden");
+    el.innerHTML = "";
+    return;
+  }
   if (state.screen === "face_ready" && state.faceDetected) {
     el.classList.remove("hidden");
     el.innerHTML = '<i data-lucide="eye" class="status-eye-icon" aria-hidden="true"></i>';
@@ -1244,6 +1281,11 @@ function updateFaceReadyBlinkHint() {
   if (!hintEl || state.screen !== "face_ready") return;
   hintEl.classList.remove("hidden");
   const labelEl = hintEl.querySelector(".blink-hint-label");
+  if (state.cameraOff) {
+    if (labelEl) labelEl.textContent = "Turn the camera on below to use blink detection.";
+    if (countEl) countEl.textContent = "";
+    return;
+  }
   if (labelEl) {
     if (btnStart?.disabled) {
       labelEl.textContent = "Detecting face…";
@@ -1263,6 +1305,14 @@ function updateFaceStatusText() {
   const el = document.getElementById("face-status-text");
   const idleEl = document.getElementById("face-idle-text");
   if (!el || state.screen !== "face_ready") return;
+  if (state.cameraOff) {
+    faceNotDetectedSeconds = 0;
+    idleMessageShown = false;
+    el.textContent = "Camera access is off. Turn the camera on below to see your video and check your position.";
+    el.classList.remove("hidden");
+    if (idleEl) idleEl.classList.add("hidden");
+    return;
+  }
   if (state.faceDetected) {
     faceNotDetectedSeconds = 0;
     idleMessageShown = false;
@@ -1299,7 +1349,7 @@ function renderCommunicationHistoryTable(containerId, options = {}) {
   const maxRows = options.maxRows ?? hist.length;
   const slice = [...hist].reverse().slice(0, maxRows);
   if (slice.length === 0) {
-    el.innerHTML = '<div class="comm-history-inner"><p class="event-empty">No communications yet.</p><p class="event-empty-hint">When the patient selects an option (e.g. Thirsty, Pain), it will show here with the time. Entries stay on this device until you clear them.</p></div>';
+    el.innerHTML = '<div class="comm-history-inner"><p class="event-empty">Nothing yet.</p><p class="event-empty-hint">When you choose something, it will show here with the time. Entries stay on this device until you clear them.</p></div>';
     el.classList.remove("hidden");
     return;
   }
@@ -1344,7 +1394,7 @@ function renderDailySummary() {
   });
   const contentEl = document.getElementById("daily-summary-content");
   if (flat.length === 0) {
-    contentEl.innerHTML = '<p class="event-empty">No communications yet.</p><p class="event-empty-hint">When the patient selects an option, it will show here with the time. Entries stay on this device until you clear them.</p>';
+    contentEl.innerHTML = '<p class="event-empty">Nothing yet.</p><p class="event-empty-hint">When you choose something, it will show here with the time. Entries stay on this device until you clear them.</p>';
     return;
   }
   const html = `
@@ -1392,7 +1442,7 @@ function renderDailySummaryLanding() {
   const today = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
   const todayEntries = hist.filter(e => e.date === today).slice(-8).reverse();
   if (todayEntries.length === 0) {
-    el.innerHTML = '<p class="event-empty">No communications today yet.</p><p class="event-empty-hint">When the patient selects an option, it will show here. Entries stay on this device until you clear them.</p>';
+    el.innerHTML = '<p class="event-empty">Nothing yet today.</p><p class="event-empty-hint">When you choose something, it will show here. Entries stay on this device until you clear them.</p>';
     return;
   }
   const html = todayEntries.map(e => {
@@ -1422,7 +1472,7 @@ function renderDailySummaryHome() {
   const today = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
   const todayEntries = hist.filter(e => e.date === today).slice(-8).reverse();
   if (todayEntries.length === 0) {
-    el.innerHTML = '<p class="event-empty">No communications today yet.</p><p class="event-empty-hint">When the patient selects an option, it will show here. Entries stay on this device until you clear them.</p>';
+    el.innerHTML = '<p class="event-empty">Nothing yet today.</p><p class="event-empty-hint">When you choose something, it will show here. Entries stay on this device until you clear them.</p>';
     return;
   }
   const html = todayEntries.map(e => {
@@ -1597,6 +1647,22 @@ function goToLanding() {
   state.summaryBlinkCount = 0;
   showScreen("face_ready");
   renderDailySummaryLanding();
+}
+
+function requestCancelFlow() {
+  const ok = window.confirm(
+    "Go back to the starting screen?\n\n" +
+      "You will return to the face-ready screen (Begin). Choose OK to confirm, or Cancel to stay here."
+  );
+  if (!ok) return;
+  goToLanding();
+}
+
+function updateCancelFlowChrome() {
+  const btn = document.getElementById("btn-cancel-flow-top");
+  if (!btn) return;
+  const show = state.caregiverMode && CANCEL_FLOW_SCREEN_IDS.has(state.screen);
+  btn.classList.toggle("hidden", !show);
 }
 
 function goHome() {
@@ -1955,13 +2021,11 @@ const BUILT_IN_ROOT_LABELS = {
 };
 
 /**
- * Patient-options architecture view (read-only).
- * Previous equal-width columns flattened hierarchy and gave secondary branches (Spell a word, Yes/No) the same weight as primary care (Urgent needs, Comfort and care). This version: (1) splits into a dominant primary canvas (left/centre) and a narrow secondary strip (right), (2) renders a true recursive tree with connector lines and depth-based weight, (3) supports unlimited nesting from the source data.
+ * Phrase map (read-only): customizable boards only. Built-in flows (Spell a word, Quick yes/no) are excluded.
+ * Layout: board titles (Urgent, Comfort, …) in a grid; category groups in one scrollable row; deeper levels compact.
  */
-/** Primary editable care architecture: dominant in layout. */
-const ARCH_PRIMARY_NAV_IDS = ["urgent_needs", "comfort_care"];
-/** Secondary/utility branches: narrower, quieter, far right. */
-const ARCH_SECONDARY_NAV_IDS = ["spelling", "quick_yes_no"];
+/** Nav IDs that are fixed system flows and never appear on the phrase map. */
+const PHRASE_MAP_EXCLUDED_NAV_IDS = new Set(["spelling", "quick_yes_no"]);
 
 /** Normalize any node shape to { label, children[] } for recursive rendering. Supports unlimited depth. */
 function normalizeToArchNode(node) {
@@ -1977,36 +2041,17 @@ function normalizeToArchNode(node) {
   return { label: node.label, children };
 }
 
-/** Build primary and secondary trees from config. Returns { primary: ArchNode[], secondary: ArchNode[] }. */
-function buildArchTrees() {
+/** Build editable-board trees from config (excludes built-in spelling / yes-no). */
+function buildPhraseMapForest() {
   const cfg = state.config || { boards: {}, navigation_root: { scan_order: [] } };
   const boards = cfg.boards || {};
   const navOrder = cfg.navigation_root?.scan_order || ["urgent_needs", "comfort_care", "spelling", "quick_yes_no"];
-  const primary = [];
-  const secondary = [];
+  const roots = [];
 
   function addBoardNode(navId, list) {
     const title = BUILT_IN_ROOT_LABELS[navId] || boards[navId]?.label || navId;
     const boardKey = getBoardKey(navId);
     const board = boards[boardKey] || content?.boards?.[boardKey];
-
-    if (navId === "spelling" && board?.rows) {
-      const children = board.rows.map(row => {
-        const rowLabel = row.label || row.id || "Row";
-        const items = (row.items || []).map(it => (typeof it === "string" ? it : it?.label || String(it)));
-        return normalizeToArchNode({ label: rowLabel, items });
-      });
-      list.push(normalizeToArchNode({ label: title, children }));
-      return;
-    }
-
-    if (navId === "quick_yes_no") {
-      list.push(normalizeToArchNode({
-        label: title,
-        children: [{ label: "No", children: [] }, { label: "Yes", children: [] }]
-      }));
-      return;
-    }
 
     if (!board?.groups) {
       list.push({ label: title, children: [] });
@@ -2028,63 +2073,62 @@ function buildArchTrees() {
     list.push(normalizeToArchNode({ label: title, children: boardChildren }));
   }
 
-  ARCH_PRIMARY_NAV_IDS.forEach(id => { if (navOrder.includes(id)) addBoardNode(id, primary); });
-  ARCH_SECONDARY_NAV_IDS.forEach(id => { if (navOrder.includes(id)) addBoardNode(id, secondary); });
-  navOrder.forEach(id => {
-    if (ARCH_PRIMARY_NAV_IDS.includes(id) || ARCH_SECONDARY_NAV_IDS.includes(id)) return;
-    addBoardNode(id, primary);
+  navOrder.forEach(navId => {
+    if (PHRASE_MAP_EXCLUDED_NAV_IDS.has(navId)) return;
+    addBoardNode(navId, roots);
   });
 
-  return { primary, secondary };
+  return roots;
 }
 
-/** Reusable hierarchy view: one branch (node + connector stalk + children). Renders recursively for unlimited depth. */
-function renderArchBranch(node, depth, zone) {
+/** One branch: node + optional stalk + children. Depth 0: category columns in one row (scroll if needed). */
+function renderPhraseMapBranch(node, depth) {
   const depthClass = `arch-d${Math.min(depth, 4)}`;
-  const zoneClass = zone === "secondary" ? " arch-secondary" : "";
-  const card = `<div class="arch-node ${depthClass}${zoneClass}" role="treeitem" aria-level="${depth + 1}">${escapeHtml(node.label)}</div>`;
+  const rootClass = depth === 0 ? " arch-node--board-root" : "";
+  const card = `<div class="arch-node ${depthClass}${rootClass}" role="treeitem" aria-level="${depth + 1}">${escapeHtml(node.label)}</div>`;
   if (!node.children || node.children.length === 0) return card;
+
+  const columnLayout = depth === 0;
+  const childrenClass = columnLayout
+    ? "arch-children arch-children--columns arch-children--categories"
+    : "arch-children";
+  const stalkHtml = columnLayout ? "" : `<div class="arch-stalk"></div>`;
 
   const childrenHtml = node.children.map((child, i) => {
     const isLast = i === node.children.length - 1;
-    const branchHtml = renderArchBranch(child, depth + 1, zone);
-    return `<div class="arch-child" data-last="${isLast}">${branchHtml}</div>`;
+    const branchHtml = renderPhraseMapBranch(child, depth + 1);
+    const childClass = columnLayout ? "arch-child arch-child--column" : "arch-child";
+    return `<div class="${childClass}" data-last="${isLast}">${branchHtml}</div>`;
   }).join("");
 
   return `<div class="arch-branch" role="group" aria-label="${escapeHtml(node.label)}">
     ${card}
-    <div class="arch-stalk"></div>
-    <div class="arch-children">${childrenHtml}</div>
+    ${stalkHtml}
+    <div class="${childrenClass}">${childrenHtml}</div>
   </div>`;
 }
 
-function renderSiteMapTree(containerEl) {
+function renderPhraseMapChart(containerEl) {
   if (!containerEl) return;
-  const { primary, secondary } = buildArchTrees();
-  const primaryHtml = primary.length
-    ? primary.map(n => renderArchBranch(n, 0, "primary")).join("")
-    : "";
-  const secondaryHtml = secondary.length
-    ? secondary.map(n => renderArchBranch(n, 0, "secondary")).join("")
-    : "";
+  const roots = buildPhraseMapForest();
+  const inner = roots.length ? roots.map(n => renderPhraseMapBranch(n, 0)).join("") : "";
   containerEl.innerHTML = `
-    <div class="arch-canvas">
-      <div class="arch-canvas-primary" role="tree" aria-label="Primary care options">${primaryHtml}</div>
-      <div class="arch-canvas-secondary" role="tree" aria-label="Utility options">${secondaryHtml}</div>
+    <div class="arch-canvas arch-canvas--phrase-map" role="tree" aria-label="Customizable phrase boards">
+      <div class="arch-canvas-primary">${inner}</div>
     </div>`;
 }
 
-function openSiteMapModal() {
-  const modal = document.getElementById("sitemap-modal");
-  const treeEl = document.getElementById("sitemap-tree");
+function openPhraseMapModal() {
+  const modal = document.getElementById("phrase-map-modal");
+  const treeEl = document.getElementById("phrase-map-chart");
   if (modal && treeEl) {
-    renderSiteMapTree(treeEl);
+    renderPhraseMapChart(treeEl);
     modal.classList.remove("hidden");
   }
 }
 
-function closeSiteMapModal() {
-  document.getElementById("sitemap-modal")?.classList.add("hidden");
+function closePhraseMapModal() {
+  document.getElementById("phrase-map-modal")?.classList.add("hidden");
 }
 
 function getBoardKey(navId) {
@@ -2159,7 +2203,7 @@ function showCustomizeSavedHint(message) {
   if (existing) existing.remove();
   const hint = document.createElement("span");
   hint.className = "customize-saved-hint";
-  hint.textContent = message || "Saved on this device.";
+  hint.textContent = message || "Saved.";
   hint.style.cssText = "margin-left:14px;color:var(--success);font-size:15px;font-weight:500;";
   footer.appendChild(hint);
   setTimeout(() => hint.remove(), 2000);
@@ -2244,7 +2288,7 @@ function renderCustomizeView() {
   if (path.length === 0) {
     const order = nav.scan_order || ["urgent_needs", "comfort_care", "spelling", "quick_yes_no"];
     const builtInLabels = { urgent_needs: "Urgent needs", comfort_care: "Comfort and care", spelling: "Spell a word", quick_yes_no: "Quick yes or no" };
-    helpEl.textContent = "Main categories on home screen. Click a category to add or edit its contents. Up to 6. Drag to reorder. Spelling and Quick yes/no are fixed.";
+    helpEl.textContent = "Main choices on the home screen. Click one to add or edit what's inside. Up to 6. Drag to reorder. Spelling and Quick yes/no are fixed.";
     addBtn.textContent = "+ Add new item";
     addBtn.disabled = order.length >= ROOT_MAX;
     if (addGroupBtn) { addGroupBtn.textContent = "+ Add new group"; addGroupBtn.classList.remove("hidden"); addGroupBtn.disabled = order.length >= ROOT_MAX; }
@@ -2298,7 +2342,7 @@ function renderCustomizeView() {
     const boardKey = path[0];
     const board = boards[boardKey] || content?.boards?.[boardKey] || { label: "", groups: [] };
     const groups = [...(board.groups || [])];
-    helpEl.textContent = "Sub-categories. Click one to add or edit items inside. Up to 6.";
+    helpEl.textContent = "Groups inside this category. Click one to add or edit items. Up to 6.";
     addBtn.textContent = "+ Add new item";
     addBtn.disabled = groups.length >= SECTION_GROUP_MAX;
     if (addGroupBtn) { addGroupBtn.textContent = "+ Add new group"; addGroupBtn.classList.remove("hidden"); addGroupBtn.disabled = groups.length >= SECTION_GROUP_MAX; }
@@ -2341,7 +2385,7 @@ function renderCustomizeView() {
     const board = boards[boardKey] || content?.boards?.[boardKey] || { groups: [] };
     const group = (board.groups || [])[groupIdx] || { items: [] };
     const items = [...(group.items || [])];
-    helpEl.textContent = "Selectable items. Items with › have sub-options — click to edit them. Up to 6 each.";
+    helpEl.textContent = "Phrases to choose from. Items with › have sub-options — click to edit. Up to 6 each.";
     addBtn.textContent = "+ Add new item";
     addBtn.disabled = items.length >= ITEMS_PER_GROUP_MAX;
     if (addGroupBtn) { addGroupBtn.textContent = "+ Add new group"; addGroupBtn.classList.remove("hidden"); addGroupBtn.disabled = items.length >= ITEMS_PER_GROUP_MAX; }
@@ -2392,7 +2436,7 @@ function renderCustomizeView() {
     const item = (group.items || [])[itemIdx];
     const subItems = (typeof item === "object" && item?.subItems) ? [...item.subItems] : [];
     const parentLabel = typeof item === "string" ? item : item?.label || "Item";
-    helpEl.textContent = `Sub-options for "${parentLabel}". Shown when patient selects the parent. Up to 6.`;
+    helpEl.textContent = `Options under "${parentLabel}". Shown when they choose the parent. Up to 6.`;
     addBtn.textContent = "+ Add new item";
     addBtn.disabled = subItems.length >= ITEMS_PER_GROUP_MAX;
     if (addGroupBtn) addGroupBtn.classList.add("hidden");
@@ -2577,7 +2621,7 @@ async function saveCustomize() {
     return;
   }
   state.config = { ...state.config, ...toSave };
-  showCustomizeSavedHint("Saved on this device.");
+  showCustomizeSavedHint("Saved.");
 }
 
 function updateSummaryPatientView() {
@@ -2732,20 +2776,49 @@ function showEmergency() {
   playAlarm();
 }
 
-function initFaceLandmarker() {
-  return import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs").then(async ({ FaceLandmarker, FilesetResolver }) => {
-    const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm");
-    state.faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
-      baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task" },
-      outputFaceBlendshapes: false,
-      runningMode: "VIDEO",
-      numFaces: 1
-    });
-  });
+const FACE_LANDMARKER_LOAD_ATTEMPTS = 3;
+
+function isLikelyAppleTouchSafari() {
+  const ua = navigator.userAgent || "";
+  if (/iPad|iPhone|iPod/.test(ua)) return true;
+  if (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1) return true;
+  return /^((?!chrome|android|crios|fxios).)*safari/i.test(ua);
+}
+
+async function initFaceLandmarker() {
+  let lastErr;
+  for (let attempt = 1; attempt <= FACE_LANDMARKER_LOAD_ATTEMPTS; attempt++) {
+    try {
+      const statusEl = document.querySelector(".init-status");
+      if (statusEl && attempt > 1) {
+        statusEl.textContent = `Loading face model (try ${attempt}/${FACE_LANDMARKER_LOAD_ATTEMPTS})…`;
+      }
+      const { FaceLandmarker, FilesetResolver } = await import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.mjs");
+      const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm");
+      state.faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+        baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task" },
+        outputFaceBlendshapes: false,
+        runningMode: "VIDEO",
+        numFaces: 1
+      });
+      return;
+    } catch (e) {
+      lastErr = e;
+      state.faceLandmarker = null;
+      if (attempt < FACE_LANDMARKER_LOAD_ATTEMPTS) {
+        await new Promise(r => setTimeout(r, 400 * attempt));
+      }
+    }
+  }
+  throw lastErr;
 }
 
 function processFrame() {
   if (state.paused) {
+    requestAnimationFrame(processFrame);
+    return;
+  }
+  if (state.cameraOff) {
     requestAnimationFrame(processFrame);
     return;
   }
@@ -2755,7 +2828,15 @@ function processFrame() {
   }
   const now = Date.now();
   const timestamp = performance.now();
-  const results = state.faceLandmarker.detectForVideo(state.video, timestamp);
+  state.landmarkerFrameTick = (state.landmarkerFrameTick || 0) + 1;
+  const stride = state.landmarkerFrameStride || 1;
+  let results;
+  if (stride > 1 && state.cachedLandmarkResults && state.landmarkerFrameTick % stride !== 0) {
+    results = state.cachedLandmarkResults;
+  } else {
+    results = state.faceLandmarker.detectForVideo(state.video, timestamp);
+    state.cachedLandmarkResults = results;
+  }
   const faceOutline = document.getElementById("face-outline");
   let eyesClosed = false;
   const wasDetected = state.faceDetected;
@@ -2844,23 +2925,94 @@ document.getElementById("app").addEventListener("click", (e) => {
   if (state.onScanSelect && state.scanItems?.length && !state.paused) triggerSelectByIndex(idx);
 });
 
-function updateCameraButton() {
-  const btn = document.getElementById("btn-camera-toggle");
+function syncCameraControlButton(btn, iconSel, labelSel) {
   if (!btn) return;
-  const isOff = state.paused;
-  const icon = btn.querySelector(".btn-camera-icon");
-  const label = btn.querySelector(".btn-camera-label");
-  if (label) label.textContent = isOff ? "Camera on" : "Camera off";
-  btn.title = isOff ? "Turn camera on" : "Turn camera off";
-  btn.setAttribute("aria-label", isOff ? "Turn camera on" : "Turn camera off");
+  const isOff = state.cameraOff;
+  const icon = btn.querySelector(iconSel);
+  const label = btn.querySelector(labelSel);
+  if (label) label.textContent = isOff ? "Turn on the camera" : "Turn off the camera";
+  btn.title = isOff ? "Turn on the camera" : "Turn off the camera";
+  btn.setAttribute("aria-label", isOff ? "Turn on the camera" : "Turn off the camera");
   if (icon) {
     icon.setAttribute("data-lucide", isOff ? "video-off" : "video");
     if (typeof lucide !== "undefined") lucide.createIcons({ root: btn });
   }
 }
 
+function updateCameraAccessStrip() {
+  document.body.classList.toggle("camera-stream-off", state.cameraOff);
+  const offPanel = document.getElementById("camera-access-off");
+  const onPanel = document.getElementById("camera-access-on");
+  const container = document.getElementById("camera-container-main");
+  if (state.cameraOff) {
+    offPanel?.classList.remove("hidden");
+    onPanel?.classList.add("hidden");
+    container?.classList.add("camera-container--off");
+    container?.classList.remove("camera-container--live");
+    document.getElementById("face-outline")?.classList.add("hidden");
+  } else {
+    offPanel?.classList.add("hidden");
+    onPanel?.classList.remove("hidden");
+    container?.classList.remove("camera-container--off");
+    container?.classList.add("camera-container--live");
+  }
+  const strip = document.getElementById("camera-access-strip");
+  if (strip && typeof lucide !== "undefined") lucide.createIcons({ root: strip });
+  updateFaceStatusText();
+  updateFaceReadyBlinkHint();
+}
+
+function updateCameraButton() {
+  syncCameraControlButton(document.getElementById("btn-camera-toggle"), ".btn-camera-icon", ".btn-camera-label");
+  syncCameraControlButton(document.getElementById("btn-camera-caregiver"), ".btn-camera-icon-panel", ".btn-camera-label-panel");
+  updateCameraAccessStrip();
+  updateStatusFaceIcon();
+}
+
+async function userToggleCameraFromUi() {
+  if (state.cameraOff) {
+    state.cameraOff = false;
+    clearCameraOffGlow();
+    try { await startCamera(); } catch (e) { console.warn("Camera restart failed:", e); }
+    updateCameraButton();
+    return;
+  }
+  stopCamera();
+  state.cameraOff = true;
+  state.faceDetected = false;
+  scheduleCameraOffGlow();
+  updateCameraButton();
+}
+
+async function userTurnCameraOnFromBanner() {
+  state.cameraOff = false;
+  clearCameraOffGlow();
+  try { await startCamera(); } catch (e) { console.warn("Camera restart failed:", e); }
+  updateCameraButton();
+}
+
+const CAMERA_OFF_GLOW_DELAY_MS = 2500;
+
+function scheduleCameraOffGlow() {
+  if (state.cameraOffGlowTimeout) clearTimeout(state.cameraOffGlowTimeout);
+  state.cameraOffGlowTimeout = setTimeout(() => {
+    state.cameraOffGlowTimeout = null;
+    document.getElementById("app-inner")?.classList.add("camera-off-warning");
+  }, CAMERA_OFF_GLOW_DELAY_MS);
+}
+
+function clearCameraOffGlow() {
+  if (state.cameraOffGlowTimeout) {
+    clearTimeout(state.cameraOffGlowTimeout);
+    state.cameraOffGlowTimeout = null;
+  }
+  document.getElementById("app-inner")?.classList.remove("camera-off-warning");
+}
+
 async function unpauseSession() {
   state.paused = false;
+  state.cameraOff = false;
+  clearCameraOffGlow();
   const btn = document.getElementById("btn-pause");
   const patientPause = document.getElementById("btn-pause-patient");
   if (btn) { btn.textContent = "Pause"; btn.classList.remove("paused"); }
@@ -2921,11 +3073,68 @@ document.addEventListener("blink-select", () => {
   if (cb) cb(label, item);
 });
 
+function getCameraApiBlockedReason() {
+  if (navigator.mediaDevices?.getUserMedia) return null;
+  if (!window.isSecureContext) {
+    return "Camera requires a secure page (HTTPS). Safari does not allow camera access when you open this app as http:// plus your computer’s IP address. Use an HTTPS URL (deployed site, GitHub Pages, or a tunnel such as ngrok with HTTPS). On your Mac only, http://localhost works for camera.";
+  }
+  return "Camera is not available in this browser or context.";
+}
+
 async function startCamera() {
-  state.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: 640, height: 480 }, audio: false });
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error(getCameraApiBlockedReason());
+  }
+  const constraints = {
+    video: {
+      facingMode: { ideal: "user" },
+      width: { ideal: 1280, min: 320 },
+      height: { ideal: 720, min: 240 },
+      frameRate: { ideal: 30, max: 30 }
+    },
+    audio: false
+  };
+  state.stream = await navigator.mediaDevices.getUserMedia(constraints);
   state.video = document.getElementById("video");
   state.video.srcObject = state.stream;
   await state.video.play();
+  const track = state.stream.getVideoTracks()[0];
+  if (track?.getSettings) {
+    const s = track.getSettings();
+    state.lastCameraSettings = s;
+    const caps = typeof track.getCapabilities === "function" ? track.getCapabilities() : null;
+    console.info("[BedsideBlink] Camera settings", s, caps || "");
+  }
+}
+
+function updateSettingsDiagnostics() {
+  const el = document.getElementById("settings-diagnostics");
+  if (!el) return;
+  const s = state.lastCameraSettings;
+  const bits = [];
+  if (s && typeof s.width === "number") {
+    bits.push(`Resolution ${s.width}×${s.height}`);
+    if (s.frameRate != null) bits.push(`${Math.round(s.frameRate)} fps`);
+    if (s.facingMode) bits.push(String(s.facingMode));
+  } else {
+    bits.push("Camera not active (allow camera and reload if blank).");
+  }
+  const stride = state.landmarkerFrameStride || 1;
+  bits.push(stride > 1 ? `Landmarks: every ${stride} frames (reduced on touch Safari)` : "Landmarks: every frame");
+  el.textContent = bits.join(" · ");
+}
+
+function getCameraErrorMessage(err) {
+  if (!err) return "Camera failed.";
+  const name = err.name || "";
+  if (name === "NotAllowedError") {
+    if (isLikelyAppleTouchSafari()) {
+      return "Camera access denied. On iPad/iPhone: Settings → Safari → Camera (set to Ask or Allow). In Safari, tap aA in the address bar → Website Settings → Camera for this site. Then reload the page.";
+    }
+    return "Camera access denied. Allow camera for this site in your browser settings, then reload.";
+  }
+  if (name === "NotFoundError") return "No camera found. Check that a camera is connected.";
+  return err.message || "Camera failed.";
 }
 
 function showInitError(msg) {
@@ -2943,6 +3152,22 @@ async function init() {
     showInitError("Please run the server: cd BedsideBlink && bash serve.sh — then open http://localhost:8080 in your browser.");
     return;
   }
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      if (state.scanInterval) {
+        state.visibilityHadActiveScan = true;
+        stopScan();
+      }
+    } else if (document.visibilityState === "visible" && state.visibilityHadActiveScan) {
+      state.visibilityHadActiveScan = false;
+      const toast = document.getElementById("global-toast");
+      if (toast) {
+        toast.textContent = "You left this tab — scanning was paused. Use “Back to starting screen” if timing feels off.";
+        toast.classList.remove("hidden");
+        setTimeout(() => toast.classList.add("hidden"), 8000);
+      }
+    }
+  }, { passive: true });
   if (speechSynthesis.getVoices().length) pickDefaultVoice();
   speechSynthesis.onvoiceschanged = () => pickDefaultVoice();
   state.caregiverMode = localStorage.getItem(CAREGIVER_MODE_KEY) === "1";
@@ -2988,26 +3213,20 @@ async function init() {
     if (overlay) overlay.classList.toggle("hidden", !state.paused);
     if (state.paused) {
       stopCamera();
+      state.cameraOff = true;
+      state.faceDetected = false;
+      clearCameraOffGlow();
     } else {
+      state.cameraOff = false;
+      clearCameraOffGlow();
       try { await startCamera(); } catch (e) { console.warn("Camera restart failed:", e); }
     }
     updateCameraButton();
   });
-  document.getElementById("btn-camera-toggle").addEventListener("click", async () => {
-    if (state.paused) {
-      await unpauseSession();
-      return;
-    }
-    state.paused = true;
-    stopCamera();
-    const btn = document.getElementById("btn-pause");
-    const patientPause = document.getElementById("btn-pause-patient");
-    if (btn) { btn.textContent = "Resume"; btn.classList.add("paused"); }
-    if (patientPause) patientPause.textContent = "Resume";
-    const overlay = document.getElementById("pause-overlay");
-    if (overlay) overlay.classList.remove("hidden");
-    updateCameraButton();
-  });
+  document.getElementById("btn-camera-toggle").addEventListener("click", () => userToggleCameraFromUi());
+  document.getElementById("btn-camera-caregiver")?.addEventListener("click", () => userToggleCameraFromUi());
+  document.getElementById("btn-inline-camera-turn-on")?.addEventListener("click", () => userTurnCameraOnFromBanner());
+  document.getElementById("btn-inline-camera-turn-off")?.addEventListener("click", () => userToggleCameraFromUi());
   document.getElementById("pause-overlay")?.addEventListener("click", () => {
     if (state.paused) unpauseSession();
   });
@@ -3057,6 +3276,7 @@ async function init() {
     closeSetupDropdown();
     document.getElementById("settings-modal").classList.remove("hidden");
     renderAccountSection();
+    updateSettingsDiagnostics();
     document.getElementById("setting-scan-speed").value = config.scan_speed_ms;
     document.getElementById("setting-blink-ms").value = config.selection_blink_ms;
     document.getElementById("setting-emergency-ms").value = config.emergency_blink_ms;
@@ -3179,10 +3399,10 @@ async function init() {
   function closeDailySummaryModal() {
     document.getElementById("daily-summary-modal").classList.add("hidden");
   }
-  document.getElementById("btn-sitemap")?.addEventListener("click", openSiteMapModal);
-  document.getElementById("btn-sitemap-close")?.addEventListener("click", closeSiteMapModal);
-  document.getElementById("sitemap-modal")?.addEventListener("click", (e) => {
-    if (e.target.id === "sitemap-modal") closeSiteMapModal();
+  document.getElementById("btn-phrase-map")?.addEventListener("click", openPhraseMapModal);
+  document.getElementById("btn-phrase-map-close")?.addEventListener("click", closePhraseMapModal);
+  document.getElementById("phrase-map-modal")?.addEventListener("click", (e) => {
+    if (e.target.id === "phrase-map-modal") closePhraseMapModal();
   });
   document.getElementById("btn-setup-toggle")?.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -3205,6 +3425,11 @@ async function init() {
     if (dropdown) dropdown.classList.add("hidden");
     document.getElementById("btn-setup-toggle")?.setAttribute("aria-expanded", "false");
   }
+  document.getElementById("btn-phrase-map-edit")?.addEventListener("click", () => {
+    closePhraseMapModal();
+    closeSetupDropdown();
+    openCustomizeModal();
+  });
   document.getElementById("btn-daily-summary").addEventListener("click", () => {
     renderDailySummary();
     document.getElementById("daily-summary-modal").classList.remove("hidden");
@@ -3227,9 +3452,10 @@ async function init() {
     goHome();
   });
   document.body.addEventListener("click", (e) => {
-    if (e.target.closest(".btn-cancel-flow")) {
+    const cancelBtn = e.target.closest(".btn-cancel-flow");
+    if (cancelBtn) {
       e.preventDefault();
-      goHome();
+      requestCancelFlow();
     }
   });
   document.getElementById("caregiver-toggle")?.addEventListener("click", toggleCaregiverMode);
@@ -3258,7 +3484,7 @@ async function init() {
       return;
     }
     if (!document.getElementById("daily-summary-modal").classList.contains("hidden")) closeDailySummaryModal();
-    else if (!document.getElementById("sitemap-modal").classList.contains("hidden")) closeSiteMapModal();
+    else if (!document.getElementById("phrase-map-modal").classList.contains("hidden")) closePhraseMapModal();
   });
 
   let faceSeconds = 0;
@@ -3300,18 +3526,38 @@ async function init() {
     await startCamera();
   } catch (e) {
     document.querySelector(".init-status")?.remove();
-    const msg = e.name === "NotAllowedError" ? "Camera access denied. Allow camera in your browser." : (e.name === "NotFoundError" ? "No camera found." : e.message);
-    showInitError(msg);
+    showInitError(getCameraErrorMessage(e));
     return;
   }
+  state.landmarkerFrameStride = isLikelyAppleTouchSafari() ? 2 : 1;
+  state.landmarkerFrameTick = 0;
+  state.cachedLandmarkResults = null;
   document.querySelector(".init-status")?.remove();
   updateFaceReadyBlinkHint();
   updateMuteButtonLabel();
   renderDailySummaryLanding();
   processFrame();
   updateCameraButton();
+  updateCancelFlowChrome();
 
   setInterval(runCountdownUpdate, 150);
 }
+
+function unlockAudioOnFirstGesture() {
+  let done = false;
+  const go = () => {
+    if (done) return;
+    done = true;
+    try {
+      const ctx = getSharedAudioContext();
+      if (ctx.state === "suspended") ctx.resume().catch(() => {});
+    } catch (_) {}
+    document.removeEventListener("pointerdown", go);
+    document.removeEventListener("touchstart", go);
+  };
+  document.addEventListener("pointerdown", go, { passive: true });
+  document.addEventListener("touchstart", go, { passive: true });
+}
+unlockAudioOnFirstGesture();
 
 init();

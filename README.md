@@ -28,6 +28,31 @@ Then open **http://localhost:8080** in your browser. Allow camera access when pr
 
 Custom port: `./serve.sh 9000`
 
+**iPad / iPhone on the same Wi‑Fi:** Opening `http://YOUR_MAC_IP:8080` in Safari **will not enable the camera** — the page is not a “secure context,” so `navigator.mediaDevices` stays unavailable and you may see a cryptic error. For real device testing you need **HTTPS** (your production URL, GitHub Pages, or a dev tunnel such as [ngrok](https://ngrok.com/) / Cloudflare Tunnel that serves `https://…`). `http://localhost:8080` only works for camera when the browser runs **on the same machine** as the server (e.g. testing on the Mac).
+
+#### Browser support (web)
+
+Verify the web app on **Chrome (desktop)** and **Safari on iPad** over **HTTPS** in production (localhost is fine for development).
+
+**Release gate:** Do not ship a web release without manual checks on **Tier A** (Chrome desktop) and **Tier B** (Safari on iPad, portrait and landscape). Record iPad model, iPadOS version, and whether testing used a normal tab or **Add to Home Screen**.
+
+| Tier | Environment | Role |
+|------|-------------|------|
+| **A** | Chrome (macOS/Windows) | Primary development and regression |
+| **B** | Safari on iPad (same Wi‑Fi as the server URL) | Touch, safe areas, camera permissions, split view |
+| **C** | Safari on iPhone (optional) | Narrow viewport smoke test |
+
+**For bedside IT / nursing staff**
+
+- Serve over **HTTPS** on the ward network; browsers only expose the camera in a secure context (with an exception for `http://localhost` during setup).
+- **Lighting:** soft, even light on the face; avoid a bright window behind the patient.
+- **Mount:** stable tablet stand at roughly arm’s length, front camera unobstructed.
+- **Permissions:** if the camera never starts, use Safari → **aA** in the address bar → **Website Settings** → **Camera**, or **Settings → Safari → Camera**, then reload the page.
+- If a device policy blocks required scripts, try **Chrome** on the same tablet when allowed.
+- **If something breaks:** reload the page, confirm camera permission for this site, try a private tab to rule out stale settings, and use **Chrome on a laptop** as a fallback when hospital policy allows.
+
+**Supported (web):** latest **Chrome** on desktop; latest **Safari** on iPad. Stable Wi‑Fi for the **first** load (MediaPipe assets). Same mounting and lighting expectations as the native app: prop the device so the front camera sees the patient’s face clearly.
+
 ### Android APK (optional)
 
 ```bash

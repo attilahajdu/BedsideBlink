@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>BedsideBlink</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -15,9 +15,9 @@
     <!-- First-run onboarding overlay -->
     <div id="onboarding-overlay" class="onboarding-overlay hidden" role="dialog" aria-labelledby="onboarding-title" aria-modal="true">
       <div class="onboarding-card">
-        <h2 id="onboarding-title">Welcome to BedsideBlink</h2>
-        <p>BedsideBlink lets you communicate by blinking. The camera detects your face and blinks. When a green outline appears around your face, <strong>blink twice</strong> to enable the Begin button, then tap Begin or blink twice again to start choosing options.</p>
-        <button id="onboarding-continue" class="caregiver-btn caregiver-btn-primary">Continue</button>
+        <h2 id="onboarding-title">Hi — this is BedsideBlink</h2>
+        <p>You can communicate by blinking. When the green outline appears around your face, <strong>blink twice</strong> to turn on Begin, then tap Begin or blink twice again to start choosing.</p>
+        <button id="onboarding-continue" class="caregiver-btn caregiver-btn-primary">Get started</button>
       </div>
     </div>
     <!-- Main content wrapper (shifts left when caregiver panel is open) -->
@@ -30,13 +30,14 @@
         <span id="status-last"></span>
         <span id="status-hint" class="patient-hint"></span>
       </div>
-      <button id="btn-camera-toggle" class="caregiver-btn status-strip-btn" title="Turn camera off" aria-label="Turn camera off">
+      <button id="btn-camera-toggle" class="caregiver-btn status-strip-btn caregiver-only" title="Turn off the camera" aria-label="Turn off the camera">
         <i data-lucide="video" class="btn-camera-icon" aria-hidden="true"></i>
-        <span class="btn-camera-label">Camera off</span>
+        <span class="btn-camera-label">Turn off the camera</span>
       </button>
       <button id="btn-caregiver-menu" class="caregiver-btn caregiver-only" title="Open menu" aria-label="Open caregiver menu" aria-expanded="false">Menu</button>
       <button id="btn-pause-patient" class="caregiver-btn patient-pause-only" title="Pause">Pause</button>
       <button id="btn-home-patient" class="caregiver-btn patient-home-btn" title="Back to home">Back to home</button>
+      <button type="button" id="btn-cancel-flow-top" class="caregiver-only btn-cancel-flow link-style-btn flow-cancel-top hidden" title="Return to the face-ready starting screen">Back to starting screen</button>
       <button id="caregiver-toggle" class="caregiver-toggle" title="Switch to caregiver controls">Caregiver</button>
     </div>
 
@@ -51,11 +52,25 @@
       </div>
       <div class="split-right">
         <div class="face-ready-content">
-          <div class="camera-container">
-            <video id="video" playsinline autoplay muted></video>
-            <div id="face-outline" class="face-outline hidden"></div>
+          <div class="face-ready-camera-block">
+            <div id="camera-container-main" class="camera-container">
+              <video id="video" playsinline autoplay muted></video>
+              <div id="face-outline" class="face-outline hidden"></div>
+            </div>
+            <div id="camera-access-strip" class="camera-access-strip" role="region" aria-label="Camera status">
+              <div id="camera-access-off" class="camera-access-panel camera-access-panel--off hidden">
+                <span class="camera-access-icon" aria-hidden="true"><i data-lucide="eye-off" class="camera-access-lucide"></i></span>
+                <p class="camera-access-copy"><span class="camera-access-title">Camera access is turned off.</span> Turn the camera on to see your video and use blink selection.</p>
+                <button type="button" id="btn-inline-camera-turn-on" class="caregiver-btn camera-access-cta">Turn on the camera</button>
+              </div>
+              <div id="camera-access-on" class="camera-access-panel camera-access-panel--on hidden">
+                <span class="camera-access-icon" aria-hidden="true"><i data-lucide="video" class="camera-access-lucide"></i></span>
+                <p class="camera-access-copy"><span class="camera-access-title">Camera access is turned on and is live.</span> You can turn it off when you need privacy.</p>
+                <button type="button" id="btn-inline-camera-turn-off" class="caregiver-btn camera-access-cta camera-access-cta--off">Turn off the camera</button>
+              </div>
+            </div>
           </div>
-            <p class="instruction instruction-tight" id="face-status-text">Please stay within the frame</p>
+          <p class="instruction instruction-tight" id="face-status-text">Please stay within the frame</p>
           <p class="instruction instruction-idle hidden" id="face-idle-text">Ready when you are. Position your face in view to begin.</p>
           <p class="face-ready-steps" id="face-ready-steps">Step 1: Position your face in the frame. Step 2: When the green outline appears, blink twice to enable Begin. Step 3: Tap Begin or blink twice to start.</p>
           <div class="face-ready-cta">
@@ -82,6 +97,7 @@
         <p class="screen-welcome">What do you need?</p>
         <p class="screen-helper">Long blink to choose. You can go back at any time.</p>
         <div id="home-items" class="scan-grid"></div>
+        <p class="flow-cancel-wrap"><button type="button" class="btn-cancel-flow link-style-btn">Back to starting screen</button></p>
       </div>
     </div>
 
@@ -94,7 +110,7 @@
         <h2 id="section-title"></h2>
         <p class="section-helper">Choose the closest match. You can go back if needed.</p>
         <div id="section-items" class="scan-grid"></div>
-        <p class="flow-cancel-wrap"><button type="button" class="btn-cancel-flow link-style-btn">Cancel go back</button></p>
+        <p class="flow-cancel-wrap"><button type="button" class="btn-cancel-flow link-style-btn">Back to starting screen</button></p>
       </div>
     </div>
 
@@ -108,7 +124,7 @@
         <p class="items-helper">Choose the closest match. You can go back if needed.</p>
         <div id="items-list" class="scan-grid"></div>
         <div id="items-pagination"></div>
-        <p class="flow-cancel-wrap"><button type="button" class="btn-cancel-flow link-style-btn">Cancel go back</button></p>
+        <p class="flow-cancel-wrap"><button type="button" class="btn-cancel-flow link-style-btn">Back to starting screen</button></p>
       </div>
     </div>
 
@@ -122,7 +138,7 @@
         <p id="confirm-item" class="confirm-item"></p>
         <p class="confirm-reassurance">You can change it if needed.</p>
         <div id="confirm-options" class="scan-grid confirm-three-options"></div>
-        <p class="flow-cancel-wrap"><button type="button" class="btn-cancel-flow link-style-btn">Cancel go back</button></p>
+        <p class="flow-cancel-wrap"><button type="button" class="btn-cancel-flow link-style-btn">Back to starting screen</button></p>
       </div>
     </div>
 
@@ -135,7 +151,7 @@
         <p class="anything-else-prompt">Choose one:</p>
         <p id="anything-else-last" class="anything-else-last"></p>
         <div id="anything-else-options" class="scan-grid two-items"></div>
-        <p class="flow-cancel-wrap"><button type="button" class="btn-cancel-flow link-style-btn">Cancel go back</button></p>
+        <p class="flow-cancel-wrap"><button type="button" class="btn-cancel-flow link-style-btn">Back to starting screen</button></p>
       </div>
     </div>
 
@@ -150,7 +166,7 @@
         <h3 id="spelling-row-label"></h3>
         <div id="spelling-row-items" class="scan-grid"></div>
         <p class="spelling-controls-label">Controls row at bottom</p>
-        <p class="flow-cancel-wrap"><button type="button" class="btn-cancel-flow link-style-btn">Cancel go back</button></p>
+        <p class="flow-cancel-wrap"><button type="button" class="btn-cancel-flow link-style-btn">Back to starting screen</button></p>
       </div>
     </div>
 
@@ -158,7 +174,7 @@
     <div id="screen-quick-yes-no" class="screen full-split">
       <div id="quick-no" class="quick-half no-half"></div>
       <div id="quick-yes" class="quick-half yes-half"></div>
-      <p class="flow-cancel-wrap flow-cancel-overlay"><button type="button" class="btn-cancel-flow link-style-btn">Cancel go back</button></p>
+      <p class="flow-cancel-wrap flow-cancel-overlay"><button type="button" class="btn-cancel-flow link-style-btn">Back to starting screen</button></p>
     </div>
 
     <!-- Screen 9: Summary — patient waiting (right) + caregiver history (left) -->
@@ -166,15 +182,15 @@
       <div class="split-left summary-caregiver-panel">
         <section class="summary-left-inner">
           <div id="summary-latest-block" class="summary-latest-block">
-            <h3 class="summary-latest-title">Latest request</h3>
+            <h3 class="summary-latest-title">What you said last</h3>
             <p id="summary-latest-time" class="summary-latest-time"></p>
             <p id="summary-latest-label" class="summary-latest-label"></p>
           </div>
-          <h2>Request history</h2>
+          <h2>What we said today</h2>
           <div id="summary-event-log" class="summary-request-cards"></div>
           <div class="summary-caregiver-buttons">
-            <button id="btn-new-session" class="caregiver-btn">Start new session</button>
-            <button id="btn-end-session" class="caregiver-btn">End session</button>
+            <button id="btn-new-session" class="caregiver-btn">Start again</button>
+            <button id="btn-end-session" class="caregiver-btn">Finish for now</button>
           </div>
         </section>
       </div>
@@ -191,10 +207,10 @@
           <p class="three-blink-title three-blink-title-compact">Blink 3 times to start a new request</p>
           <p id="summary-blink-count" class="summary-blink-count" aria-live="polite"></p>
           <div class="summary-patient-caregiver-actions">
-            <button id="btn-new-session-patient" class="caregiver-btn caregiver-btn-primary">Start new session</button>
-            <button id="btn-end-session-patient" class="caregiver-btn">End session</button>
+            <button id="btn-new-session-patient" class="caregiver-btn caregiver-btn-primary">Start again</button>
+            <button id="btn-end-session-patient" class="caregiver-btn">Finish for now</button>
           </div>
-          <p class="flow-cancel-wrap"><button type="button" class="btn-cancel-flow link-style-btn">Cancel go back</button></p>
+          <p class="flow-cancel-wrap"><button type="button" class="btn-cancel-flow link-style-btn">Back to starting screen</button></p>
         </div>
       </div>
     </div>
@@ -216,14 +232,18 @@
       <div class="caregiver-nav-panel-inner">
         <button id="btn-caregiver-panel-close" class="caregiver-nav-close" aria-label="Close menu">&times;</button>
         <nav class="caregiver-nav-links">
+          <button id="btn-camera-caregiver" class="caregiver-btn caregiver-nav-camera" title="Turn the camera on or off" aria-label="Turn off the camera">
+            <i data-lucide="video" class="btn-camera-icon-panel" aria-hidden="true"></i>
+            <span class="btn-camera-label-panel">Turn off the camera</span>
+          </button>
           <button id="btn-home" class="caregiver-btn" title="Back to landing page">Home</button>
           <button id="btn-daily-summary" class="caregiver-btn caregiver-btn-primary" title="View daily progress summary">Summary</button>
-          <button id="btn-sitemap" class="caregiver-btn caregiver-btn-primary" title="View full patient options structure">Site map</button>
+          <button id="btn-phrase-map" class="caregiver-btn caregiver-btn-primary" title="All customizable phrases and how they nest (read-only)">Phrase map</button>
           <div class="nav-group-setup nav-in-panel">
-            <button id="btn-setup-toggle" class="caregiver-btn caregiver-btn-setup" title="Calibrate, customize, settings" aria-haspopup="true" aria-expanded="false">Setup <span class="nav-chevron" aria-hidden="true">▾</span></button>
+            <button id="btn-setup-toggle" class="caregiver-btn caregiver-btn-setup" title="Blink timing, edit phrases, preferences" aria-haspopup="true" aria-expanded="false">Setup <span class="nav-chevron" aria-hidden="true">▾</span></button>
             <div id="setup-dropdown" class="nav-dropdown hidden" role="menu">
-              <button id="btn-calibration-main" class="caregiver-btn nav-dropdown-item" role="menuitem" title="Calibrate blink detection">Calibrate</button>
-              <button id="btn-customize" class="caregiver-btn nav-dropdown-item" role="menuitem" title="Customize tiles">Customize</button>
+              <button id="btn-calibration-main" class="caregiver-btn nav-dropdown-item" role="menuitem" title="Set blink timing">Blink timing</button>
+              <button id="btn-customize" class="caregiver-btn nav-dropdown-item" role="menuitem" title="Edit phrases on the board">Edit phrases</button>
               <button id="btn-settings-main" class="caregiver-btn nav-dropdown-item" role="menuitem" title="Scan speed, volume, voice">Settings</button>
             </div>
           </div>
@@ -238,7 +258,7 @@
   </div>
 
   <!-- Pause overlay — tap to continue (outside #app for correct z-index) -->
-  <div id="pause-overlay" class="overlay overlay-pause hidden" tabindex="0" role="button" aria-label="Tap to resume session">
+  <div id="pause-overlay" class="overlay overlay-pause hidden" tabindex="0" role="button" aria-label="Tap to continue">
     <div class="pause-message">
         <p class="pause-title">Paused</p>
         <p class="pause-hint">Tap to continue</p>
@@ -251,7 +271,7 @@
       <h2>Settings</h2>
       <div class="settings-grid">
         <section class="settings-group">
-          <h3 class="settings-group-title">Speed</h3>
+          <h3 class="settings-group-title">Timing</h3>
           <div class="setting-row">
             <label for="setting-scan-speed">Scan speed</label>
             <span class="setting-value"><span id="setting-scan-speed-label">Medium</span> (<span id="setting-scan-speed-ms">5000</span> ms)</span>
@@ -280,6 +300,10 @@
           <h3 class="settings-group-title">Account</h3>
           <div id="account-section-wrap" class="account-section-wrap"></div>
         </section>
+        <section class="settings-group settings-group-diagnostics" aria-label="Diagnostics">
+          <h3 class="settings-group-title">Diagnostics</h3>
+          <p id="settings-diagnostics" class="settings-diagnostics"></p>
+        </section>
       </div>
       <div class="settings-footer">
         <button id="btn-settings-close">Close</button>
@@ -291,23 +315,26 @@
   <div id="daily-summary-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="daily-summary-title">
     <div class="modal-content modal-content-wide">
       <div class="modal-header">
-        <h2 id="daily-summary-title">Today's care summary</h2>
+        <h2 id="daily-summary-title">Today</h2>
         <button id="btn-daily-summary-close" class="modal-close-btn" aria-label="Close">&times;</button>
       </div>
-      <p class="modal-subtitle">Request history — for caregiver reference</p>
+      <p class="modal-subtitle">For your reference</p>
       <div id="daily-summary-content"></div>
     </div>
   </div>
 
-  <!-- Site map modal (read-only view of patient options) -->
-  <div id="sitemap-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="sitemap-title">
-    <div class="modal-content modal-content-wide modal-content-tall">
+  <!-- Phrase map: editable boards only (excludes Spell a word / Quick yes-no) -->
+  <div id="phrase-map-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="phrase-map-title">
+    <div class="modal-content modal-content-wide modal-content-tall phrase-map-modal-inner">
       <div class="modal-header">
-        <h2 id="sitemap-title">Patient options — full structure</h2>
-        <button id="btn-sitemap-close" class="modal-close-btn" aria-label="Close">&times;</button>
+        <h2 id="phrase-map-title">Phrase map</h2>
+        <button id="btn-phrase-map-close" class="modal-close-btn" aria-label="Close">&times;</button>
       </div>
-      <p class="modal-subtitle">Read-only architecture of every option the patient can choose. Primary care branches on the left; utility options on the right.</p>
-      <div id="sitemap-tree" class="arch-canvas-wrap"></div>
+      <div class="phrase-map-actions">
+        <button type="button" id="btn-phrase-map-edit" class="caregiver-btn caregiver-btn-primary" title="Edit phrases on the board">Edit phrases</button>
+      </div>
+      <p class="modal-subtitle">Every customizable phrase and category—Spell a word and Quick yes/no are built in and not shown here.</p>
+      <div id="phrase-map-chart" class="arch-canvas-wrap phrase-map-chart"></div>
     </div>
   </div>
 
@@ -315,7 +342,7 @@
   <div id="customize-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="customize-title">
     <div class="modal-content modal-content-wide">
       <div class="modal-header">
-        <h2 id="customize-title">Customize tiles</h2>
+        <h2 id="customize-title">Edit phrases</h2>
         <button id="btn-customize-close" class="modal-close-btn" aria-label="Close">&times;</button>
       </div>
       <div id="customize-breadcrumb" class="customize-breadcrumb"></div>
@@ -334,8 +361,8 @@
   <!-- Calibration modal -->
   <div id="calibration-modal" class="modal hidden">
     <div class="modal-content">
-      <h2>Calibration</h2>
-      <p class="calibration-intro">Calibration teaches the system your blink length so selections are more accurate. Do 5 normal blinks, then 3 deliberate “selection” blinks when prompted. A good calibration uses comfortable, consistent blinks.</p>
+      <h2>Set your blink timing</h2>
+      <p class="calibration-intro">This helps the app learn how long your blinks are, so it can tell when you mean to choose something. Do 5 normal blinks, then 3 deliberate “selection” blinks when prompted. Use comfortable, consistent blinks.</p>
       <div class="setting-row calibration-tile-setting">
         <label for="calibration-scan-speed">Time per tile</label>
         <span class="setting-value"><span id="calibration-scan-speed-label">Medium</span> (<span id="calibration-scan-speed-ms">5000</span> ms)</span>
@@ -343,11 +370,11 @@
       </div>
       <p id="calibration-step"></p>
       <div id="calibration-success-wrap" class="calibration-success hidden">
-        <p class="calibration-success-msg">Calibration complete. Selection timing has been saved.</p>
+        <p class="calibration-success-msg">Done. Your blink timing is saved.</p>
         <button id="btn-calibration-done" class="caregiver-btn caregiver-btn-primary">Done</button>
       </div>
       <div id="calibration-actions">
-        <button id="btn-calibration-close" class="caregiver-btn">Skip calibration</button>
+        <button id="btn-calibration-close" class="caregiver-btn">Skip</button>
       </div>
     </div>
   </div>

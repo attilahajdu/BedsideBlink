@@ -1,16 +1,18 @@
 /* ===== BedsideBlink — Calm, empathetic bedside companion design system ===== */
 :root {
+  /* Fixed #status-strip height below safe-area — keeps Begin / main CTAs higher on screen */
+  --status-strip-offset: calc(env(safe-area-inset-top, 0px) + 52px);
   --font-sans: "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --bg-deep: #0d1321;
-  --bg-surface: #1a2234;
-  --bg-elevated: #252d3d;
-  --bg-card: rgba(26, 34, 52, 0.5);
+  --bg-deep: #0c1118;
+  --bg-surface: #161c24;
+  --bg-elevated: #1e252e;
+  --bg-card: rgba(22, 28, 36, 0.6);
   --text-primary: #e8ecf1;
   --text-secondary: #8b9aad;
   --text-muted: #5c6b7c;
-  --accent: #5b9ed4;
-  --accent-soft: rgba(91, 158, 212, 0.12);
-  --accent-border: rgba(91, 158, 212, 0.25);
+  --accent: #5da0c8;
+  --accent-soft: rgba(93, 160, 200, 0.14);
+  --accent-border: rgba(93, 160, 200, 0.28);
   --success: #6bcf8a;
   --success-soft: rgba(107, 207, 138, 0.15);
   --danger: #e08080;
@@ -21,8 +23,8 @@
   --radius-md: 14px;
   --radius-lg: 20px;
   --radius-xl: 28px;
-  --shadow-soft: 0 2px 16px rgba(0, 0, 0, 0.08);
-  --shadow-card: 0 4px 24px rgba(0, 0, 0, 0.12);
+  --shadow-soft: 0 2px 16px rgba(0, 0, 0, 0.1);
+  --shadow-card: 0 4px 24px rgba(0, 0, 0, 0.14);
   --transition: 0.25s ease;
   --transition-slow: 0.35s ease;
 }
@@ -35,9 +37,10 @@
 
 body {
   font-family: var(--font-sans);
-  background: linear-gradient(180deg, #0a0f18 0%, #0f1724 35%, #0d1321 100%);
+  background: linear-gradient(180deg, #090c10 0%, #0c1118 35%, #0c1118 100%);
   color: var(--text-primary);
   min-height: 100vh;
+  min-height: 100dvh;
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -45,6 +48,7 @@ body {
 
 #app {
   min-height: 100vh;
+  min-height: 100dvh;
   position: relative;
 }
 
@@ -90,13 +94,24 @@ body {
   margin-left: auto;
   margin-right: auto;
 }
+#screen-face-ready .face-ready-steps {
+  margin-bottom: 10px;
+  padding: 0 4px;
+}
 
 /* ===== Top bar — minimal; caregiver nav moves to slide-out panel ===== */
 #app-inner {
-  transition: margin-right 0.25s ease;
+  transition: margin-right 0.25s ease, box-shadow 0.6s ease;
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 body.nav-panel-open #app-inner {
   margin-right: 280px;
+}
+/* Camera off: soft warning glow (not danger) — patient can still navigate; blink selection won’t work until camera is on */
+#app-inner.camera-off-warning {
+  box-shadow: 0 0 0 3px rgba(220, 140, 90, 0.45), 0 0 48px 6px rgba(200, 110, 60, 0.18);
 }
 #status-strip {
   position: fixed;
@@ -105,12 +120,10 @@ body.nav-panel-open #app-inner {
   right: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 28px;
-  padding-top: max(64px, env(safe-area-inset-top));
-  padding-bottom: 24px;
-  min-height: 112px;
-  background: rgba(15, 23, 42, 0.92);
+  gap: 6px;
+  padding: max(6px, env(safe-area-inset-top)) 16px 8px;
+  min-height: 0;
+  background: rgba(12, 17, 24, 0.92);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
@@ -120,16 +133,31 @@ body.nav-panel-open #app-inner {
 #status-strip .status-left {
   display: flex;
   align-items: center;
-  gap: 24px;
+  gap: 12px 16px;
   flex: 1;
   min-width: 0;
+  flex-wrap: wrap;
+}
+/* Camera in caregiver side panel: same width and left alignment as other nav buttons */
+.caregiver-nav-links .caregiver-nav-camera {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-start;
+  width: 100%;
+  text-align: left;
+}
+.caregiver-nav-links .caregiver-nav-camera .btn-camera-icon-panel {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
 }
 #status-strip span { font-size: 13px; color: var(--text-secondary); letter-spacing: 0.02em; }
 .hidden { display: none !important; }
 .status-face-icon { display: inline-flex; align-items: center; margin-right: 4px; }
 .status-face-icon.hidden { display: none; }
 .status-eye-icon { width: 18px; height: 18px; color: var(--accent); }
-#status-step { font-weight: 600; color: var(--text-primary); font-size: 15px; line-height: 1.4; }
+#status-step { font-weight: 600; color: var(--text-primary); font-size: 14px; line-height: 1.35; }
 #status-last { color: var(--text-secondary); font-size: 13px; }
 #status-hint { color: var(--text-muted); font-size: 12px; font-weight: 400; }
 #btn-caregiver-menu { flex-shrink: 0; }
@@ -139,7 +167,20 @@ body.nav-panel-open #app-inner {
   align-items: center;
   gap: 6px;
 }
-#btn-camera-toggle .btn-camera-icon { width: 18px; height: 18px; }
+#btn-camera-toggle .btn-camera-icon { width: 16px; height: 16px; }
+#status-strip .caregiver-btn,
+#status-strip .caregiver-toggle {
+  padding: 5px 10px;
+  font-size: 11px;
+}
+#btn-cancel-flow-top.flow-cancel-top {
+  flex-shrink: 0;
+  align-self: center;
+  max-width: min(220px, 34vw);
+  line-height: 1.25;
+  text-align: right;
+  padding: 2px 0;
+}
 .nav-group {
   display: flex;
   align-items: center;
@@ -207,14 +248,14 @@ body.nav-panel-open #app-inner {
   width: 280px;
   max-width: 85vw;
   height: 100vh;
-  background: rgba(15, 23, 42, 0.98);
+  background: rgba(12, 17, 24, 0.98);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
   border-left: 1px solid rgba(255, 255, 255, 0.08);
   z-index: 95;
   transform: translateX(100%);
   transition: transform 0.25s ease;
-  padding-top: max(64px, env(safe-area-inset-top));
+  padding-top: max(12px, env(safe-area-inset-top));
   padding-right: env(safe-area-inset-right);
   overflow-y: auto;
 }
@@ -292,7 +333,6 @@ body.patient-mode .patient-pause-only { display: flex; }
 body:not(.patient-mode) .patient-pause-only { display: none; }
 body.patient-mode .patient-home-btn { display: flex; }
 body:not(.patient-mode) .patient-home-btn { display: none; }
-body:not(.patient-mode) .flow-cancel-wrap { display: none !important; }
 .flow-cancel-wrap {
   margin-top: 16px;
   text-align: center;
@@ -304,10 +344,35 @@ body:not(.patient-mode) .flow-cancel-wrap { display: none !important; }
   font-size: 14px;
   color: var(--text-muted);
   text-decoration: underline;
+  text-underline-offset: 3px;
   cursor: pointer;
   font-family: var(--font-sans);
 }
 .flow-cancel-wrap .link-style-btn:hover { color: var(--accent); }
+/* Caregiver: same hyperlink look, higher contrast & weight */
+body:not(.patient-mode) .flow-cancel-wrap .link-style-btn {
+  font-size: 15px;
+  font-weight: 600;
+  color: #7dd3fc;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  text-decoration-thickness: 1.5px;
+}
+body:not(.patient-mode) .flow-cancel-wrap .link-style-btn:hover {
+  color: #bae6fd;
+}
+body:not(.patient-mode) #btn-cancel-flow-top.flow-cancel-top {
+  font-size: 14px;
+  font-weight: 600;
+  color: #7dd3fc;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  text-decoration-thickness: 1.5px;
+}
+body:not(.patient-mode) #btn-cancel-flow-top.flow-cancel-top:hover {
+  color: #bae6fd;
+  background: transparent;
+}
 .flow-cancel-overlay {
   position: absolute;
   top: 12px;
@@ -321,6 +386,15 @@ body:not(.patient-mode) .flow-cancel-wrap { display: none !important; }
 }
 #screen-quick-yes-no .flow-cancel-overlay .link-style-btn:hover {
   color: #fff;
+}
+body:not(.patient-mode) #screen-quick-yes-no .flow-cancel-overlay .link-style-btn {
+  font-size: 15px;
+  font-weight: 600;
+  color: #7dd3fc;
+  text-shadow: 0 1px 8px rgba(0, 0, 0, 0.45);
+}
+body:not(.patient-mode) #screen-quick-yes-no .flow-cancel-overlay .link-style-btn:hover {
+  color: #bae6fd;
 }
 body.screen-face-ready .patient-home-btn,
 body.screen-home .patient-home-btn { display: none !important; }
@@ -357,8 +431,9 @@ body.screen-home .patient-home-btn { display: none !important; }
   flex-direction: column;
   align-items: center;
   padding: 48px 40px;
-  padding-top: 180px;
+  padding-top: var(--status-strip-offset);
   min-height: 100vh;
+  min-height: 100dvh;
 }
 .screen.active {
   display: flex;
@@ -381,8 +456,9 @@ body.screen-home .patient-home-btn { display: none !important; }
   align-items: stretch;
   justify-content: center;
   gap: 32px;
-  padding: 200px 40px 64px;
+  padding: var(--status-strip-offset) 32px max(48px, env(safe-area-inset-bottom, 0px));
   min-height: 100vh;
+  min-height: 100dvh;
   overflow: visible;
 }
 .screen-split.active {
@@ -421,7 +497,8 @@ body.patient-mode #screen-home.active { grid-template-columns: 1fr; }
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding-bottom: 48px;
+  padding-bottom: max(48px, env(safe-area-inset-bottom, 0px));
+  scroll-padding-bottom: max(24px, env(safe-area-inset-bottom, 0px));
 }
 
 /* ===== Event log / Communication history — always visible ===== */
@@ -540,20 +617,150 @@ body.patient-mode #screen-home.active { grid-template-columns: 1fr; }
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0;
-  max-width: 400px;
+  gap: 14px;
+  max-width: min(620px, 100%);
+  width: 100%;
+  padding: 6px 16px 10px;
+  box-sizing: border-box;
+}
+/* Preview + status/CTAs side by side — wide, low preview (16:9) */
+.face-ready-camera-block {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: stretch;
+  justify-content: center;
+  gap: 14px 18px;
+  width: 100%;
+  margin-bottom: 4px;
 }
 .screen-split .camera-container {
   position: relative;
   width: 100%;
-  max-width: 320px;
-  aspect-ratio: 4/3;
+  aspect-ratio: 16 / 9;
   border-radius: var(--radius-xl);
   overflow: hidden;
-  margin-bottom: 28px;
   background: var(--bg-surface);
-  border: 1px solid var(--border-card);
+  border: 2px solid rgba(255, 255, 255, 0.08);
   box-shadow: var(--shadow-soft);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.screen-split .face-ready-camera-block .camera-container {
+  flex: 2 1 300px;
+  min-width: min(200px, 100%);
+  max-width: 100%;
+  margin-bottom: 0;
+}
+.screen-split .camera-container.camera-container--off {
+  border-color: rgba(220, 75, 75, 0.85);
+  box-shadow: 0 0 0 1px rgba(180, 50, 50, 0.4), var(--shadow-soft);
+}
+.screen-split .camera-container.camera-container--live {
+  border-color: rgba(74, 200, 120, 0.45);
+}
+/* Status strip to the right of preview: compact column, CTAs beside copy */
+.camera-access-strip {
+  flex: 1 1 200px;
+  min-width: min(176px, 100%);
+  max-width: 300px;
+  margin-bottom: 0;
+  display: flex;
+  align-items: stretch;
+}
+.camera-access-panel {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  align-content: center;
+  gap: 10px 12px;
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  text-align: left;
+  width: 100%;
+  box-sizing: border-box;
+}
+@media (max-width: 520px) {
+  .face-ready-camera-block {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .camera-access-strip {
+    max-width: none;
+  }
+  .screen-split .face-ready-camera-block .camera-container {
+    flex: 1 1 auto;
+    max-width: 100%;
+  }
+}
+.camera-access-panel--off {
+  background: rgba(120, 45, 35, 0.18);
+  border: 1px solid rgba(200, 90, 75, 0.45);
+}
+.camera-access-panel--on {
+  background: rgba(30, 75, 55, 0.2);
+  border: 1px solid rgba(74, 180, 120, 0.38);
+}
+.camera-access-panel .camera-access-icon {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  flex-shrink: 0;
+  padding-top: 2px;
+}
+.camera-access-lucide {
+  width: 22px;
+  height: 22px;
+}
+.camera-access-panel--off .camera-access-lucide {
+  color: rgba(255, 190, 170, 0.95);
+}
+.camera-access-panel--on .camera-access-lucide {
+  color: rgba(130, 220, 175, 0.95);
+}
+.camera-access-copy {
+  flex: 1 1 140px;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  margin: 0;
+}
+.camera-access-title {
+  display: block;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+.camera-access-cta {
+  align-self: center;
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 9px 18px;
+  font-size: 14px;
+  font-weight: 600;
+}
+@media (max-width: 400px) {
+  .camera-access-panel .camera-access-cta {
+    margin-left: 0;
+    width: 100%;
+    display: inline-flex;
+    justify-content: center;
+    box-sizing: border-box;
+  }
+}
+.camera-access-cta--off {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--text-primary);
+}
+.camera-access-cta--off:hover {
+  background: rgba(220, 80, 80, 0.15);
+  border-color: rgba(220, 100, 100, 0.4);
+}
+body.camera-stream-off.screen-face-ready .face-ready-cta #btn-start {
+  opacity: 0.45;
+  pointer-events: none;
 }
 .camera-container video {
   position: absolute;
@@ -577,6 +784,10 @@ body.patient-mode #screen-home.active { grid-template-columns: 1fr; }
   margin-bottom: 20px;
   line-height: 1.6;
 }
+#screen-face-ready .instruction-tight {
+  margin-bottom: 12px;
+  padding: 0 4px;
+}
 .instruction-idle {
   font-size: 15px;
   font-weight: 500;
@@ -585,13 +796,18 @@ body.patient-mode #screen-home.active { grid-template-columns: 1fr; }
   margin-bottom: 20px;
   line-height: 1.6;
 }
+#screen-face-ready .instruction-idle {
+  margin-bottom: 12px;
+}
 .instruction.hidden { display: none; }
 .face-ready-cta {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 20px;
+  gap: 14px;
   width: 100%;
+  padding-top: 2px;
+  scroll-margin-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
 }
 .instruction-blink {
   font-size: 15px;
@@ -690,7 +906,7 @@ body.patient-mode #screen-home.active { grid-template-columns: 1fr; }
 .scan-item.active {
   opacity: 1;
   border-color: var(--accent-border);
-  background: rgba(26, 34, 52, 0.7);
+  background: rgba(22, 28, 36, 0.85);
   padding-right: 44px;
 }
 /* Subtle small countdown ring — top-right only, does not overlay label */
@@ -822,7 +1038,7 @@ body.patient-mode #screen-home.active { grid-template-columns: 1fr; }
 #items-pagination { font-size: 14px; color: var(--text-muted); margin-top: 16px; }
 
 /* ===== Confirm & Anything else ===== */
-#screen-confirm, #screen-anything-else { padding-top: 200px; gap: 40px; }
+#screen-confirm, #screen-anything-else { padding-top: var(--status-strip-offset); gap: 40px; }
 .confirm-prompt, .anything-else-prompt {
   font-size: 26px;
   color: var(--text-secondary);
@@ -1150,6 +1366,14 @@ body.patient-mode #screen-summary.active { grid-template-columns: 1fr; }
 .settings-group .setting-voice-extra:last-of-type { margin-bottom: 0; }
 .settings-group .setting-inline label { cursor: pointer; }
 .settings-group-account { grid-column: 1 / -1; }
+.settings-group-diagnostics { grid-column: 1 / -1; }
+.settings-diagnostics {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-muted);
+  margin: 0;
+  word-break: break-word;
+}
 .settings-group-account .account-section-wrap { margin-top: 4px; padding-top: 0; border-top: none; }
 .settings-group-account .account-section { gap: 8px; }
 .settings-group-account .account-actions { gap: 6px; }
@@ -1157,7 +1381,21 @@ body.patient-mode #screen-summary.active { grid-template-columns: 1fr; }
 .setting-volume-range { width: 80px; vertical-align: middle; margin: 0 8px; }
 .modal-content-wide { max-width: 96vw; width: 1200px; max-height: 90vh; overflow-y: auto; }
 .modal-content-tall { max-height: 85vh; display: flex; flex-direction: column; }
-.modal-content-tall .arch-canvas-wrap { flex: 1; min-height: 420px; overflow: auto; }
+.modal-content-tall .arch-canvas-wrap,
+.modal-content-tall .phrase-map-chart { flex: 1; min-height: 420px; overflow: auto; }
+.phrase-map-chart {
+  overflow-x: auto;
+  overflow-y: auto;
+}
+.phrase-map-actions {
+  margin-bottom: 12px;
+  margin-top: 4px;
+}
+.phrase-map-actions .caregiver-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
 .modal-header {
   display: flex;
   align-items: flex-start;
@@ -1274,7 +1512,19 @@ body.patient-mode #screen-summary.active { grid-template-columns: 1fr; }
   margin: 0;
 }
 
-/* ===== Patient options — architecture / taxonomy view ===== */
+/* ===== Phrase map (read-only org-chart of editable boards) ===== */
+/* Tiered text tuned for WCAG-friendly contrast on dark surfaces (esp. d2–d4). */
+.phrase-map-chart,
+#phrase-map-chart {
+  --dt-text: #e8ecf1;
+  --dt-text-body: #cdd6e3;
+  --dt-text-deep: #b4c0d0;
+  --dt-line: rgba(255, 255, 255, 0.2);
+  --dt-line-soft: rgba(255, 255, 255, 0.14);
+  --dt-surface-leaf: rgba(30, 38, 48, 0.92);
+  --dt-border-leaf: rgba(255, 255, 255, 0.12);
+}
+
 .arch-canvas-wrap {
   margin-top: 4px;
   padding: 4px 0;
@@ -1283,140 +1533,259 @@ body.patient-mode #screen-summary.active { grid-template-columns: 1fr; }
 .arch-canvas {
   display: flex;
   flex-direction: row;
-  align-items: stretch;
-  gap: 0;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 20px 24px;
   min-width: min-content;
   width: 100%;
 }
 
-/* Primary: left/centre, dominant. Secondary: far right, narrower, quieter. */
-.arch-canvas-primary {
-  flex: 1;
-  min-width: 0;
-  padding-right: 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 28px;
+.arch-canvas--phrase-map .arch-canvas-primary {
+  flex: 1 1 100%;
+  width: 100%;
 }
-.arch-canvas-secondary {
-  flex: 0 0 240px;
-  width: 240px;
-  padding-left: 24px;
-  border-left: 1px solid rgba(255, 255, 255, 0.06);
+
+/* Primary boards: grid so Urgent | Comfort | … sit side by side */
+.arch-canvas-primary {
+  flex: 1 1 520px;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px 14px;
+  align-items: start;
+}
+.arch-canvas-primary > .arch-branch,
+.arch-canvas-secondary > .arch-branch {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  min-height: 0;
+}
+
+/* Utility column: spelling + yes/no as peers */
+.arch-canvas-secondary {
+  flex: 1 1 200px;
+  max-width: 420px;
+  min-width: 160px;
+  padding-left: 20px;
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+@media (max-width: 720px) {
+  .arch-canvas-secondary {
+    border-left: none;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    padding-left: 0;
+    padding-top: 16px;
+    max-width: none;
+  }
 }
 
 /* Branch = node + stalk + children (recursive). */
 .arch-branch {
   position: relative;
+  min-width: 0;
+  width: 100%;
 }
+
 .arch-node {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
-  color: var(--text-primary);
+  color: var(--dt-text, var(--text-primary));
   background: var(--bg-card);
   border: 1px solid var(--border-surface);
   border-radius: var(--radius-sm);
-  padding: 10px 14px;
+  padding: 8px 12px;
   margin-bottom: 0;
-  transition: background 0.15s ease;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  width: fit-content;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 .arch-node:hover {
-  background: rgba(255, 255, 255, 0.04);
+  background: rgba(255, 255, 255, 0.06);
 }
 
-/* Depth: stronger at top, lighter and more compact deeper. */
+/* Depth: stronger at top; deeper levels stay legible (no washed-out muted). */
 .arch-node.arch-d0 {
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
-  padding: 12px 18px;
-  background: rgba(91, 158, 212, 0.08);
-  border-color: rgba(91, 158, 212, 0.25);
-  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.1);
+  padding: 10px 14px;
+  width: auto;
+  max-width: none;
+  align-self: stretch;
+  text-align: center;
+  color: var(--dt-text, var(--text-primary));
+  background: rgba(91, 158, 212, 0.14);
+  border-color: rgba(91, 158, 212, 0.38);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.12);
+}
+/* Phrase map: board titles (Urgent needs, …) read as a clear band above categories */
+.phrase-map-chart .arch-node--board-root.arch-d0 {
+  background: linear-gradient(180deg, rgba(52, 62, 78, 0.98) 0%, rgba(36, 44, 58, 0.99) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-bottom: 4px solid rgba(93, 160, 200, 0.5);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  color: #f2f5f9;
 }
 .arch-node.arch-d0.arch-secondary {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
-  padding: 10px 14px;
-  background: rgba(255, 255, 255, 0.03);
-  border-color: rgba(255, 255, 255, 0.06);
+  padding: 8px 12px;
+  color: var(--dt-text, var(--text-primary));
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(255, 255, 255, 0.14);
 }
 .arch-node.arch-d1 {
-  font-size: 14px;
-  font-weight: 500;
-  padding: 10px 14px;
-  border-left: 3px solid rgba(107, 207, 138, 0.5);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 11px;
+  color: var(--dt-text, var(--text-primary));
+  background: var(--dt-surface-leaf, rgba(28, 35, 44, 0.85));
+  border: 1px solid var(--dt-border-leaf, rgba(255, 255, 255, 0.12));
+  border-left: 3px solid rgba(107, 207, 138, 0.78);
 }
 .arch-node.arch-d2 {
   font-size: 13px;
   font-weight: 500;
-  padding: 8px 12px;
-  color: var(--text-secondary);
-  border-left: 3px solid rgba(251, 146, 60, 0.4);
+  padding: 6px 10px;
+  color: var(--dt-text-body, #cdd6e3);
+  background: var(--dt-surface-leaf, rgba(28, 35, 44, 0.92));
+  border: 1px solid var(--dt-border-leaf, rgba(255, 255, 255, 0.12));
+  border-left: 3px solid rgba(251, 146, 60, 0.78);
 }
 .arch-node.arch-d3,
 .arch-node.arch-d4 {
   font-size: 12px;
-  font-weight: 400;
-  padding: 6px 12px;
-  color: var(--text-muted);
-  border-left: 2px solid rgba(255, 255, 255, 0.06);
+  font-weight: 500;
+  line-height: 1.35;
+  padding: 6px 10px;
+  color: var(--dt-text-deep, #b4c0d0);
+  background: var(--dt-surface-leaf, rgba(28, 35, 44, 0.95));
+  border: 1px solid var(--dt-border-leaf, rgba(255, 255, 255, 0.14));
+  border-left: 3px solid rgba(255, 255, 255, 0.28);
 }
 
-/* Connector: vertical stalk from parent to children block. */
+/* Connector: vertical stalk (skipped under root when using column layout) */
 .arch-stalk {
   width: 1px;
-  height: 10px;
-  margin-left: 20px;
-  background: rgba(255, 255, 255, 0.12);
+  height: 8px;
+  margin-left: 16px;
+  background: var(--dt-line-soft, rgba(255, 255, 255, 0.14));
   flex-shrink: 0;
 }
+
+/* Default: vertical stack with guide line (depth > 0) */
 .arch-children {
   position: relative;
-  padding-left: 20px;
-  margin-top: 0;
+  padding-left: 16px;
+  margin-top: 2px;
 }
 .arch-children::before {
   content: "";
   position: absolute;
-  left: 9px;
+  left: 7px;
   top: 0;
   bottom: 0;
   width: 1px;
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--dt-line-soft, rgba(255, 255, 255, 0.14));
 }
 .arch-child {
   position: relative;
-  padding-top: 4px;
+  padding-top: 3px;
 }
 .arch-child::before {
   content: "";
   position: absolute;
-  left: -11px;
-  top: 14px;
-  width: 12px;
+  left: -9px;
+  top: 12px;
+  width: 10px;
   height: 1px;
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--dt-line-soft, rgba(255, 255, 255, 0.14));
 }
 .arch-child:first-child {
-  padding-top: 6px;
+  padding-top: 4px;
 }
 
-/* Secondary zone: quieter. */
-.arch-node.arch-secondary {
-  background: rgba(255, 255, 255, 0.02);
-  border-color: rgba(255, 255, 255, 0.04);
+/* Root level: groups / peers as horizontal columns (org-chart) */
+.arch-children--columns {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  align-content: flex-start;
+  gap: 10px 12px;
+  padding-left: 0;
+  margin-top: 10px;
 }
-.arch-node.arch-secondary.arch-d1,
-.arch-node.arch-secondary.arch-d2,
+.arch-children--columns::before {
+  display: none;
+}
+/* Main categories (Breathing, Pain, …): one row — scroll horizontally if needed so all stay visible */
+.arch-children--categories {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: visible;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 10px;
+  margin-bottom: 2px;
+  scrollbar-gutter: stable;
+}
+.arch-children--categories::-webkit-scrollbar {
+  height: 6px;
+}
+.arch-children--categories::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+}
+.arch-child--column {
+  flex: 0 0 auto;
+  min-width: min(200px, 85vw);
+  max-width: 280px;
+  padding-top: 0;
+}
+.arch-child--column::before {
+  display: none;
+}
+.arch-child--column > .arch-branch {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--radius-sm);
+  padding: 8px 8px 10px;
+  background: rgba(22, 28, 36, 0.92);
+}
+.arch-child--column > .arch-branch > .arch-node.arch-d1 {
+  margin-bottom: 6px;
+}
+
+/* Secondary zone: same contrast rules (spelling / yes-no paths). */
+.arch-node.arch-secondary {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+.arch-node.arch-secondary.arch-d1 {
+  color: var(--dt-text, var(--text-primary));
+  border: 1px solid var(--dt-border-leaf, rgba(255, 255, 255, 0.12));
+  border-left: 3px solid rgba(107, 207, 138, 0.7);
+}
+.arch-node.arch-secondary.arch-d2 {
+  font-size: 12px;
+  padding: 6px 9px;
+  color: var(--dt-text-body, #cdd6e3);
+  border: 1px solid var(--dt-border-leaf, rgba(255, 255, 255, 0.12));
+  border-left: 3px solid rgba(251, 146, 60, 0.72);
+}
 .arch-node.arch-secondary.arch-d3,
 .arch-node.arch-secondary.arch-d4 {
   font-size: 12px;
-  padding: 6px 10px;
-  color: var(--text-muted);
-  border-left-color: rgba(255, 255, 255, 0.06);
+  font-weight: 500;
+  line-height: 1.35;
+  padding: 6px 9px;
+  color: var(--dt-text-deep, #b4c0d0);
+  border: 1px solid var(--dt-border-leaf, rgba(255, 255, 255, 0.14));
+  border-left: 3px solid rgba(255, 255, 255, 0.26);
 }
 
 .modal-content p { margin-bottom: 16px; color: var(--text-secondary); }
@@ -1838,7 +2207,18 @@ body.patient-mode #screen-summary.active { grid-template-columns: 1fr; }
 .event-log-glass .event-time { font-variant-numeric: tabular-nums; color: var(--text-secondary); }
 
 /* ===== Non-split screens ===== */
-.screen:not(.full-split) { max-height: 100vh; overflow: hidden; }
+.screen:not(.full-split) { max-height: 100vh; max-height: 100dvh; overflow: hidden; }
+
+/* iPad: split view / short landscape — keep padding above home indicator; right column scrolls */
+@media (orientation: landscape) and (max-height: 560px) {
+  .screen-split.active {
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  #screen-face-ready .face-ready-content {
+    padding-bottom: max(8px, env(safe-area-inset-bottom, 0px));
+  }
+}
 #screen-summary { overflow: visible; }
 #section-items.scan-grid,
 #items-list.scan-grid { min-width: 60%; max-width: min(90vw, 800px); }
